@@ -1,8 +1,11 @@
 package xslt
 
 import (
+	"bytes"
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"unsafe"
 
 	"github.com/jbowtie/gokogiri/xml"
@@ -19,7 +22,7 @@ func (style *Stylesheet) RegisterXsltFunctions() {
 	style.Functions["{}current"] = XsltCurrent
 	style.Functions["{}element-available"] = XsltElementAvailable
 	style.Functions["{}function-available"] = XsltFunctionAvailable
-	//format-number - requires handling decimal-format
+	style.Functions["{}format-number"] = XsltFormatNumber
 
 	style.Functions["{http://xmlsoft.org/XSLT/namespace}node-set"] = EXSLTnodeset
 	style.Functions["{http://exslt.org/common}node-set"] = EXSLTnodeset
@@ -271,4 +274,49 @@ func EXSLTmathabs(context xpath.VariableScope, args []interface{}) interface{} {
 	}
 
 	return math.Abs(args[0].(float64))
+}
+
+func XsltFormatNumber(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return nil
+	}
+
+	number := args[0].(float64)
+	format := args[1].(string)
+
+	if len(format) <= 0 {
+		fmt.Println("XsltFormatNumber: Invalid format (0-length)")
+	}
+
+	re := regexp.MustCompile("(?P<int>(?:#|0)*)(?P<dot>.?)(?P<dec>(?:#|0)*)")
+	names := re.SubexpNames()
+	matches := re.FindAllStringSubmatch(format, -1)[0]
+
+	parts := map[string]string{}
+	for i, n := range matches {
+		parts[names[i]] = n
+	}
+
+	var buffer bytes.Buffer
+
+	intstr := strconv.FormatInt(int64(number), 10)
+
+	if parts["int"] != "" {
+		if len(intstr) > len(parts["int"]) {
+			buffer.WriteString(intstr)
+		} else if len(intstr) < len(parts["int"]) {
+			for i := 0; i < len(parts["int"])-len(intstr); i++ {
+				buffer.WriteByte('0')
+			}
+			buffer.WriteString(intstr)
+		} else {
+			for i := range parts["int"] {
+				if i < len(intstr) {
+					buffer.WriteByte(intstr[i])
+				}
+			}
+		}
+	}
+
+	return buffer.String()
 }
