@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"unsafe"
 
-	"github.com/jbowtie/gokogiri/xml"
-	"github.com/jbowtie/gokogiri/xpath"
+	"github.com/freemed/gokogiri/xml"
+	"github.com/freemed/gokogiri/xpath"
 )
 
 func (style *Stylesheet) RegisterXsltFunctions() {
@@ -79,7 +79,7 @@ func XsltSystemProperty(context xpath.VariableScope, args []interface{}) interfa
 	case "xsl:vendor":
 		return "John C Barstow"
 	case "xsl:vendor-url":
-		return "http://github.com/jbowtie/ratago"
+		return "http://github.com/freemed/ratago"
 	default:
 		fmt.Println("EXEC system-property", args[0])
 	}

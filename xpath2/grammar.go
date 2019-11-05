@@ -1,6 +1,6 @@
 package xpath2
 
-import "github.com/jbowtie/kowhai"
+import "github.com/freemed/kowhai"
 
 func XPathGrammar() (g *kowhai.Grammar) {
 	g = kowhai.CreateGrammar()

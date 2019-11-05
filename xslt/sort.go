@@ -1,7 +1,7 @@
 package xslt
 
 import (
-	"github.com/jbowtie/gokogiri/xml"
+	"github.com/freemed/gokogiri/xml"
 	"sort"
 )
 

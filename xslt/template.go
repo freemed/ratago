@@ -3,8 +3,8 @@ package xslt
 import (
 	"container/list"
 	"fmt"
-	"github.com/jbowtie/gokogiri/xml"
-	"github.com/jbowtie/gokogiri/xpath"
+	"github.com/freemed/gokogiri/xml"
+	"github.com/freemed/gokogiri/xpath"
 	"strings"
 	"unicode/utf8"
 )
