@@ -21,3 +21,5 @@ _testmain.go
 
 *.exe
 ratago
+
+go.sum
