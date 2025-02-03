@@ -1,5 +1,5 @@
-github.com/freemed/gokogiri/util v0.0.0-20220627154600-2acb041aa5ac h1:YBv4trmp1KYIHEVLhlpYB0rMWPkJJ9lKxqStIDq6Vss=
-github.com/freemed/gokogiri/util v0.0.0-20220627154600-2acb041aa5ac/go.mod h1:Ht4aksP7bphV6lzjvym9TOM/GDPLXiNneGjZpcbHg0c=
+github.com/freemed/gokogiri/util v0.0.0-20230628164547-0f93de0487ac h1:YHqcaijAQrFZq2SPGf8mMKWY9P4bKqGpwjR3FCNFdLU=
+github.com/freemed/gokogiri/util v0.0.0-20230628164547-0f93de0487ac/go.mod h1:Ht4aksP7bphV6lzjvym9TOM/GDPLXiNneGjZpcbHg0c=
 github.com/freemed/kowhai v0.0.0-20150515033021-5b6ea3150fcb h1:ClUMBP0CUigWVq9G6YWSf3tLknJEV+jJw74pxX6wktU=
 github.com/freemed/kowhai v0.0.0-20150515033021-5b6ea3150fcb/go.mod h1:E4XSaUO6hPkgQ7aGye4VBjS/W7t2Tu7oxmu9fLgCcKM=
 github.com/gopherjs/gopherjs v1.17.2 h1:fQnZVsXk8uxXIStYb0N4bGk7jeyTalG/wsZjQ25dO0g=
