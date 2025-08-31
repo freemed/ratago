@@ -1,8 +1,8 @@
 module github.com/freemed/ratago/xslt
 
-go 1.22
+go 1.24
 
-toolchain go1.23.2
+toolchain go1.24.3
 
 replace (
 	github.com/freemed/gokogiri => ../../gokogiri
@@ -14,11 +14,11 @@ replace (
 )
 
 require (
-	github.com/freemed/gokogiri/xml v0.0.0-20230628164547-0f93de0487ac
-	github.com/freemed/gokogiri/xpath v0.0.0-20230628164547-0f93de0487ac
+	github.com/freemed/gokogiri/xml v0.0.0-20250402180648-1e651eb8ffcd
+	github.com/freemed/gokogiri/xpath v0.0.0-20250402180648-1e651eb8ffcd
 )
 
 require (
-	github.com/freemed/gokogiri/help v0.0.0-20230628164547-0f93de0487ac // indirect
-	github.com/freemed/gokogiri/util v0.0.0-20230628164547-0f93de0487ac // indirect
+	github.com/freemed/gokogiri/help v0.0.0-20250402180648-1e651eb8ffcd // indirect
+	github.com/freemed/gokogiri/util v0.0.0-20250402180648-1e651eb8ffcd // indirect
 )
