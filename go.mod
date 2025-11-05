@@ -14,17 +14,12 @@ replace (
 )
 
 require (
-	github.com/freemed/gokogiri/xml v0.0.0-20250402180648-1e651eb8ffcd
-	github.com/freemed/kowhai v0.0.0-20150515033021-5b6ea3150fcb
-	github.com/freemed/ratago/xslt v0.0.0-20250203231425-016f1ea48158
-	github.com/smartystreets/goconvey v1.8.1
+	github.com/freemed/gokogiri/xml v0.0.0-20250831182455-de8ad4878374
+	github.com/freemed/ratago/xslt v0.0.0-20250831182729-e19658c30a29
 )
 
 require (
-	github.com/freemed/gokogiri/help v0.0.0-20250402180648-1e651eb8ffcd // indirect
-	github.com/freemed/gokogiri/util v0.0.0-20250402180648-1e651eb8ffcd // indirect
-	github.com/freemed/gokogiri/xpath v0.0.0-20250402180648-1e651eb8ffcd // indirect
-	github.com/gopherjs/gopherjs v1.17.2 // indirect
-	github.com/jtolds/gls v4.20.0+incompatible // indirect
-	github.com/smarty/assertions v1.15.0 // indirect
+	github.com/freemed/gokogiri/help v0.0.0-20250831182455-de8ad4878374 // indirect
+	github.com/freemed/gokogiri/util v0.0.0-20250831182455-de8ad4878374 // indirect
+	github.com/freemed/gokogiri/xpath v0.0.0-20250831182455-de8ad4878374 // indirect
 )

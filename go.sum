@@ -1,14 +1,2 @@
-github.com/freemed/gokogiri/util v0.0.0-20230628164547-0f93de0487ac h1:YHqcaijAQrFZq2SPGf8mMKWY9P4bKqGpwjR3FCNFdLU=
-github.com/freemed/gokogiri/util v0.0.0-20230628164547-0f93de0487ac/go.mod h1:Ht4aksP7bphV6lzjvym9TOM/GDPLXiNneGjZpcbHg0c=
-github.com/freemed/gokogiri/util v0.0.0-20250402180648-1e651eb8ffcd h1:TjKJ9ekoKbjJuNAVNIdSeh1yoWCJl4tNXoHqEgsEuGw=
-github.com/freemed/gokogiri/util v0.0.0-20250402180648-1e651eb8ffcd/go.mod h1:Ejse5Y6jJeTcV3aePY3PY5QbfSrDpWl8Qsm9F+lNSBo=
-github.com/freemed/kowhai v0.0.0-20150515033021-5b6ea3150fcb h1:ClUMBP0CUigWVq9G6YWSf3tLknJEV+jJw74pxX6wktU=
-github.com/freemed/kowhai v0.0.0-20150515033021-5b6ea3150fcb/go.mod h1:E4XSaUO6hPkgQ7aGye4VBjS/W7t2Tu7oxmu9fLgCcKM=
-github.com/gopherjs/gopherjs v1.17.2 h1:fQnZVsXk8uxXIStYb0N4bGk7jeyTalG/wsZjQ25dO0g=
-github.com/gopherjs/gopherjs v1.17.2/go.mod h1:pRRIvn/QzFLrKfvEz3qUuEhtE/zLCWfreZ6J5gM2i+k=
-github.com/jtolds/gls v4.20.0+incompatible h1:xdiiI2gbIgH/gLH7ADydsJ1uDOEzR8yvV7C0MuV77Wo=
-github.com/jtolds/gls v4.20.0+incompatible/go.mod h1:QJZ7F/aHp+rZTRtaJ1ow/lLfFfVYBRgL+9YlvaHOwJU=
-github.com/smarty/assertions v1.15.0 h1:cR//PqUBUiQRakZWqBiFFQ9wb8emQGDb0HeGdqGByCY=
-github.com/smarty/assertions v1.15.0/go.mod h1:yABtdzeQs6l1brC900WlRNwj6ZR55d7B+E8C6HtKdec=
-github.com/smartystreets/goconvey v1.8.1 h1:qGjIddxOk4grTu9JPOU31tVfq3cNdBlNa5sSznIX1xY=
-github.com/smartystreets/goconvey v1.8.1/go.mod h1:+/u4qLyY6x1jReYOp7GOM2FSt8aP9CzCZL03bI28W60=
+github.com/freemed/gokogiri/util v0.0.0-20250831182455-de8ad4878374 h1:HDEqjdXEnBwh7Mv6dzkGFFkCBaoUcRlXiMVxdYnsZ48=
+github.com/freemed/gokogiri/util v0.0.0-20250831182455-de8ad4878374/go.mod h1:Ejse5Y6jJeTcV3aePY3PY5QbfSrDpWl8Qsm9F+lNSBo=
