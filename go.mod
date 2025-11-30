@@ -15,7 +15,7 @@ replace (
 
 require (
 	github.com/freemed/gokogiri/xml v0.0.0-20250831182455-de8ad4878374
-	github.com/freemed/ratago/xslt v0.0.0-20250831182729-e19658c30a29
+	github.com/freemed/ratago/xslt v0.0.0-20251105151549-80fda038dff4
 )
 
 require (

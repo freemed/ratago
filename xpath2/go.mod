@@ -1,6 +1,6 @@
 module github.com/freemed/ratago/xpath2
 
-go 1.22
+go 1.24
 
 toolchain go1.23.2
 
