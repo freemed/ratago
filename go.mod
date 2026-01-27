@@ -14,12 +14,12 @@ replace (
 )
 
 require (
-	github.com/freemed/gokogiri/xml v0.0.0-20251130225105-1c0457d97f4b
-	github.com/freemed/ratago/xslt v0.0.0-20251130224444-ff8869104a5d
+	github.com/freemed/gokogiri/xml v0.0.0-20251209120151-edc422feefb4
+	github.com/freemed/ratago/xslt v0.0.0-20251209120218-62d49e66fc88
 )
 
 require (
-	github.com/freemed/gokogiri/help v0.0.0-20251130225105-1c0457d97f4b // indirect
-	github.com/freemed/gokogiri/util v0.0.0-20251130225105-1c0457d97f4b // indirect
-	github.com/freemed/gokogiri/xpath v0.0.0-20251130225105-1c0457d97f4b // indirect
+	github.com/freemed/gokogiri/help v0.0.0-20251209120151-edc422feefb4 // indirect
+	github.com/freemed/gokogiri/util v0.0.0-20251209120151-edc422feefb4 // indirect
+	github.com/freemed/gokogiri/xpath v0.0.0-20251209120151-edc422feefb4 // indirect
 )

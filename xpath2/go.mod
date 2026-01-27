@@ -2,8 +2,6 @@ module github.com/freemed/ratago/xpath2
 
 go 1.24
 
-toolchain go1.23.2
-
 require (
 	github.com/freemed/kowhai v0.0.0-20150515033021-5b6ea3150fcb
 	github.com/smartystreets/goconvey v1.8.1
