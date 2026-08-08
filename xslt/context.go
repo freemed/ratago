@@ -13,15 +13,16 @@ import (
 
 // ExecutionContext is passed to XSLT instructions during processing.
 type ExecutionContext struct {
-	Style          *Stylesheet                 // The master stylesheet
-	Output         xml.Document                // The output document
-	Source         xml.Document                // The source input document
-	OutputNode     xml.Node                    // The current output node
-	Current        xml.Node                    // The node that will be returned for "current()"
-	XPathContext   *xpath.XPath                //the XPath context
-	Mode           string                      //The current template mode
-	Stack          list.List                   //stack used for scoping local variables
-	InputDocuments map[string]*xml.XmlDocument //additional input documents via document()
+	Style           *Stylesheet                 // The master stylesheet
+	Output          xml.Document                // The output document
+	Source          xml.Document                // The source input document
+	OutputNode      xml.Node                    // The current output node
+	Current         xml.Node                    // The node that will be returned for "current()"
+	XPathContext    *xpath.XPath                //the XPath context
+	Mode            string                      //The current template mode
+	Stack           list.List                   //stack used for scoping local variables
+	InputDocuments  map[string]*xml.XmlDocument //additional input documents via document()
+	CurrentTemplate *Template                   //the template currently being applied
 }
 
 func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (result interface{}, err error) {
@@ -167,6 +168,18 @@ func (context *ExecutionContext) ShouldStrip(xmlNode xml.Node) bool {
 	if !IsBlank(xmlNode) {
 		return false
 	}
+
+	// Check for xml:space="preserve" on any ancestor
+	for anc := xmlNode.Parent(); anc != nil; anc = anc.Parent() {
+		if anc.NodeType() == xml.XML_ELEMENT_NODE {
+			space := anc.Attr("space")
+			xmlns := anc.Namespace()
+			if xmlns == XML_NAMESPACE && space == "preserve" {
+				return false
+			}
+		}
+	}
+
 	//do we have a match in strip-space?
 	elem := xmlNode.Parent().Name()
 	ns := xmlNode.Parent().Namespace()
@@ -187,19 +200,46 @@ func (context *ExecutionContext) ShouldStrip(xmlNode xml.Node) bool {
 		}
 	}
 	//do we have a match in preserve-space?
-	//resolve conflicts by priority (QName, ns:*, *)
+	// Preserve-space beats strip-space for equal specificity (spec rule)
+	for _, pat := range context.Style.PreserveSpace {
+		if pat == elem {
+			return false
+		}
+		if pat == "*" {
+			return false
+		}
+		if strings.Contains(pat, ":") {
+			uri, name := context.ResolveQName(pat)
+			if uri == ns {
+				if name == elem || name == "*" {
+					return false
+				}
+			}
+		}
+	}
 	//return a value
 	return false
 }
 
 func (context *ExecutionContext) ResolveQName(qname string) (ns, name string) {
 	if !strings.Contains(qname, ":") {
-		//TODO: lookup default namespace
-		return "", name
+		// no prefix: use the default namespace from the current context
+		name = qname
+		if context.Current != nil {
+			ns = context.DefaultNamespace(context.Current)
+		}
+		return
 	}
 	parts := strings.Split(qname, ":")
 	for uri, prefix := range context.Style.NamespaceMapping {
 		if prefix == parts[0] {
+			return uri, parts[1]
+		}
+	}
+	// also try resolving through in-scope namespaces
+	if context.Current != nil {
+		uri := context.LookupNamespace(parts[0], context.Current)
+		if uri != "" {
 			return uri, parts[1]
 		}
 	}
@@ -330,7 +370,7 @@ func (context *ExecutionContext) DeclareStylesheetNamespacesIfRoot(node xml.Node
 	}
 	//add all namespace declarations to r
 	for uri, prefix := range context.Style.NamespaceMapping {
-		if uri != XSLT_NAMESPACE {
+		if uri != XSLT_NAMESPACE && uri != XML_NAMESPACE {
 			//these don't actually change if there is no alias
 			_, uri = ResolveAlias(context.Style, prefix, uri)
 			if !context.Style.IsExcluded(prefix) {
@@ -351,7 +391,14 @@ func (context *ExecutionContext) FetchInputDocument(loc string, relativeToSource
 	if relativeToSource {
 		base, _ = filepath.Abs(filepath.Dir(context.Source.Uri()))
 	} else {
-		base, _ = filepath.Abs(filepath.Dir(context.Style.Doc.Uri()))
+		// Resolve against the owning stylesheet of the current template,
+		// falling back to the top-level stylesheet
+		if context.CurrentTemplate != nil && context.CurrentTemplate.OwningStyle != nil {
+			base, _ = filepath.Abs(filepath.Dir(context.CurrentTemplate.OwningStyle.stylesheetUri))
+		}
+		if base == "" {
+			base, _ = filepath.Abs(filepath.Dir(context.Style.Doc.Uri()))
+		}
 	}
 	resolvedLoc := filepath.Join(base, loc)
 

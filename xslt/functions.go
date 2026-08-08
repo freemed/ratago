@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"strings"
 	"unsafe"
 
 	"github.com/freemed/gokogiri/xml"
@@ -48,22 +49,19 @@ func XsltKey(context xpath.VariableScope, args []interface{}) interface{} {
 
 	// convert to string
 	val := argValToString(args[1])
-	/*
-		val := ""
-		switch v := args[1].(type) {
-		case string:
-			val = v
-		case []unsafe.Pointer:
-			// nodeset; see xsl:key spec for how to handle this
-		}*/
 	//get the execution context
 	c := context.(*ExecutionContext)
 	//look up the key
-	k, ok := c.Style.Keys[name]
+	keyList, ok := c.Style.Keys[name]
 	if !ok {
 		return nil
 	}
-	result, _ := k.nodes[val]
+	// Union results from all keys with the same name
+	var result xml.Nodeset
+	for _, k := range keyList {
+		nodes, _ := k.nodes[val]
+		result = append(result, nodes...)
+	}
 	//return the nodeset
 	return result.ToPointers()
 }
@@ -125,10 +123,14 @@ func XsltGenerateId(context xpath.VariableScope, args []interface{}) interface{}
 		return nil
 	}
 
-	//c := context.(*ExecutionContext)
+	c := context.(*ExecutionContext)
+	// When called with no argument, generate-id for the context node
 	if len(args) < 1 {
-		fmt.Println("GENERATE-ID for current")
-		return "N" //id of context node
+		if c.Current != nil {
+			out := fmt.Sprintf("N%v", uintptr(c.Current.NodePtr()))
+			return out
+		}
+		return "N"
 	}
 
 	switch v := args[0].(type) {
@@ -168,12 +170,45 @@ func XsltFunctionAvailable(context xpath.VariableScope, args []interface{}) inte
 	}
 	c := context.(*ExecutionContext)
 	qname := args[0].(string)
-	//TODO: resolve namespace of argument
-	return c.IsFunctionRegistered("", qname)
+	// Resolve namespace from QName
+	ns, local := "", qname
+	if strings.Contains(qname, ":") {
+		parts := strings.SplitN(qname, ":", 2)
+		ns = c.LookupNamespace(parts[0], c.Current)
+		local = parts[1]
+	}
+	return c.IsFunctionRegistered(ns, local)
 }
 
 // Implementation of element-available() from XSLT spec
 func XsltElementAvailable(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return nil
+	}
+	c := context.(*ExecutionContext)
+	qname := args[0].(string)
+	// Resolve namespace from QName
+	ns, local := "", qname
+	if strings.Contains(qname, ":") {
+		parts := strings.SplitN(qname, ":", 2)
+		ns = c.LookupNamespace(parts[0], c.Current)
+		local = parts[1]
+	}
+	// XSLT namespace elements are always available
+	if ns == XSLT_NAMESPACE || ns == "" {
+		switch local {
+		case "apply-imports", "apply-templates", "attribute", "attribute-set",
+			"call-template", "choose", "comment", "copy", "copy-of",
+			"decimal-format", "element", "fallback", "for-each",
+			"if", "import", "include", "key", "message",
+			"namespace-alias", "number", "otherwise", "output",
+			"param", "preserve-space", "processing-instruction",
+			"sort", "strip-space", "stylesheet", "template",
+			"text", "transform", "value-of", "variable", "when",
+			"with-param":
+			return true
+		}
+	}
 	return false
 }
 
@@ -280,7 +315,7 @@ func EXSLTmathabs(context xpath.VariableScope, args []interface{}) interface{} {
 }
 
 func XsltFormatNumber(context xpath.VariableScope, args []interface{}) interface{} {
-	if len(args) < 1 {
+	if len(args) < 2 {
 		return nil
 	}
 
@@ -291,32 +326,150 @@ func XsltFormatNumber(context xpath.VariableScope, args []interface{}) interface
 		fmt.Println("XsltFormatNumber: Invalid format (0-length)")
 	}
 
-	re := regexp.MustCompile("(?P<int>(?:#|0)*)(?P<dot>.?)(?P<dec>(?:#|0)*)")
+	// Determine which decimal-format to use
+	c := context.(*ExecutionContext)
+	var df *DecimalFormat
+	if len(args) >= 3 {
+		dfName := argValToString(args[2])
+		if dfName != "" {
+			df = c.Style.DecimalFormats[dfName]
+		}
+	}
+	if df == nil {
+		df = c.Style.DecimalFormats[""] // default unnamed format
+	}
+
+	// Handle special values
+	if math.IsNaN(number) {
+		if df != nil && df.NaN != "" {
+			return df.NaN
+		}
+		return "NaN"
+	}
+	if math.IsInf(number, 1) {
+		if df != nil && df.Infinity != "" {
+			return df.Infinity
+		}
+		return "Infinity"
+	}
+	if math.IsInf(number, -1) {
+		if df != nil && df.Infinity != "" {
+			minusSign := "-"
+			if df != nil && df.MinusSign != "" {
+				minusSign = df.MinusSign
+			}
+			return minusSign + df.Infinity
+		}
+		return "-Infinity"
+	}
+
+	// Determine separators
+	decSep := "."
+	groupSep := ""
+	if df != nil {
+		if df.DecimalSeparator != "" {
+			decSep = df.DecimalSeparator
+		}
+		if df.GroupingSeparator != "" {
+			groupSep = df.GroupingSeparator
+		}
+	}
+
+	// Handle negative numbers
+	negative := number < 0
+	if negative {
+		number = -number
+	}
+
+	re := regexp.MustCompile("(?P<int>(?:#|0)*)(?P<dot>.)(?P<dec>(?:#|0)*)")
 	names := re.SubexpNames()
-	matches := re.FindAllStringSubmatch(format, -1)[0]
+	matches := re.FindAllStringSubmatch(format, -1)
+	if matches == nil || len(matches) == 0 {
+		// No decimal part in format; format as integer
+		intPart := reInteger.FindAllStringSubmatch(format, -1)
+		if intPart != nil {
+			parts := map[string]string{}
+			for i, n := range reInteger.SubexpNames() {
+				parts[n] = intPart[0][i]
+			}
+			return formatIntegerPart(number, parts, groupSep, negative, df)
+		}
+		return fmt.Sprintf("%v", number)
+	}
 
 	parts := map[string]string{}
-	for i, n := range matches {
+	for i, n := range matches[0] {
 		parts[names[i]] = n
 	}
 
 	var buffer bytes.Buffer
 
+	// Format integer part
+	intStr := formatIntegerPart(number, parts, groupSep, false, df)
+	buffer.WriteString(intStr)
+
+	// Format decimal part
+	if parts["dot"] != "" {
+		buffer.WriteString(decSep)
+		frac := number - float64(int64(number))
+		if frac < 0 {
+			frac = -frac
+		}
+		decFmt := parts["dec"]
+		if decFmt != "" {
+			decStr := strconv.FormatFloat(frac, 'f', len(decFmt), 64)
+			// Strip leading "0."
+			if len(decStr) > 2 && decStr[0] == '0' && decStr[1] == '.' {
+				decStr = decStr[2:]
+			}
+			buffer.WriteString(decStr)
+		}
+	}
+
+	result := buffer.String()
+
+	// Prepend minus sign for negative numbers
+	if negative {
+		minusSign := "-"
+		if df != nil && df.MinusSign != "" {
+			minusSign = df.MinusSign
+		}
+		result = minusSign + result
+	}
+
+	return result
+}
+
+var reInteger = regexp.MustCompile("(?P<int>(?:#|0)*)")
+
+func formatIntegerPart(number float64, parts map[string]string, groupSep string, negative bool, df *DecimalFormat) string {
+	var buffer bytes.Buffer
+	intPart := parts["int"]
+
 	intstr := strconv.FormatInt(int64(number), 10)
 
-	if parts["int"] != "" {
-		if len(intstr) > len(parts["int"]) {
-			buffer.WriteString(intstr)
-		} else if len(intstr) < len(parts["int"]) {
-			for i := 0; i < len(parts["int"])-len(intstr); i++ {
-				buffer.WriteByte('0')
+	if intPart != "" {
+		// If format is all zeros, pad with leading zeros
+		if !strings.ContainsRune(intPart, '#') {
+			if len(intstr) < len(intPart) {
+				for i := 0; i < len(intPart)-len(intstr); i++ {
+					buffer.WriteByte('0')
+				}
 			}
 			buffer.WriteString(intstr)
 		} else {
-			for i := range parts["int"] {
-				if i < len(intstr) {
-					buffer.WriteByte(intstr[i])
+			buffer.WriteString(intstr)
+		}
+
+		// Apply grouping separator if specified
+		if groupSep != "" {
+			result := buffer.String()
+			buffer.Reset()
+			for i, ch := range result {
+				if i > 0 && (len(result)-i)%3 == 0 {
+					buffer.WriteString(groupSep)
 				}
+				buffer.WriteRune(ch)
 			}
 		}
 	}

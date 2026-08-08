@@ -45,7 +45,9 @@ func (i *XsltInstruction) evalChildrenAsText(node xml.Node, context *ExecutionCo
 		c.Apply(node, context)
 	}
 	for cur := context.OutputNode.FirstChild(); cur != nil; cur = cur.NextSibling() {
-		//TODO: generate error if cur is not a text node
+		if cur.NodeType() != xml.XML_TEXT_NODE && cur.NodeType() != xml.XML_CDATA_SECTION_NODE {
+			err = fmt.Errorf("xsl:%s must not create non-text nodes", i.Name)
+		}
 		out = out + cur.Content()
 	}
 	context.OutputNode = curOutput
@@ -156,10 +158,30 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 			ns = evalAVT(ns, node, context)
 		}
 		if ns != "" {
-			//TODO: search through namespaces in-scope
-			// not just top-level stylesheet mappings
-			prefix, _ := context.Style.NamespaceMapping[ns]
-			r.SetNamespace(prefix, ns)
+			// Check if namespace is already in-scope on the parent
+			inScope := false
+			parentNode := context.OutputNode
+			if parentNode != nil && parentNode.NodeType() != xml.XML_DOCUMENT_NODE {
+				for _, decl := range parentNode.DeclaredNamespaces() {
+					if decl.Uri == ns {
+						inScope = true
+						break
+					}
+				}
+			}
+			if !inScope {
+				prefix, _ := context.Style.NamespaceMapping[ns]
+				r.SetNamespace(prefix, ns)
+			} else {
+				// Namespace already in-scope; set element's namespace without
+				// redeclaring. Find the existing prefix if any.
+				for _, decl := range parentNode.DeclaredNamespaces() {
+					if decl.Uri == ns {
+						r.SetNamespace(decl.Prefix, ns)
+						break
+					}
+				}
+			}
 		} else {
 			// if no namespace specified, use the default namespace
 			// in scope at this point in the stylesheet
@@ -193,10 +215,29 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		r := context.Output.CreateCommentNode(val)
 		context.OutputNode.AddChild(r)
 
+	case "namespace":
+		name := i.Node.Attr("name")
+		if strings.ContainsRune(name, '{') {
+			name = evalAVT(name, node, context)
+		}
+		// Error: name must not be "xmlns" or start with "xmlns:"
+		if name == "xmlns" || strings.HasPrefix(name, "xmlns:") {
+			fmt.Println("xsl:namespace: invalid name '", name, "'")
+		}
+		val, _ := i.evalChildrenAsText(node, context)
+		// Don't create a namespace node for xmlns="..." (empty name maps to default NS)
+		if name == "" {
+			context.OutputNode.DeclareNamespace("", val)
+		} else {
+			context.OutputNode.DeclareNamespace(name, val)
+		}
+
 	case "processing-instruction":
 		name := i.Node.Attr("name")
 		val, _ := i.evalChildrenAsText(node, context)
-		//TODO: it is an error if val contains "?>"
+		if strings.Contains(val, "?>") {
+			fmt.Println("xsl:processing-instruction: value must not contain '?>'")
+		}
 		r := context.Output.CreatePINode(name, val)
 		context.OutputNode.AddChild(r)
 
@@ -405,13 +446,36 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		val, _ := i.evalChildrenAsText(node, context)
 		terminate := i.Node.Attr("terminate")
 		if terminate == "yes" {
-			//TODO: fixup error flow to terminate more gracefully
-			panic(val)
+			// Use a typed panic that Process() can recover gracefully
+			panic(&terminationError{val})
 		} else {
 			fmt.Println(val)
 		}
 	case "apply-imports":
-		fmt.Println("TODO handle xsl:apply-imports instruction")
+		if context.CurrentTemplate == nil || context.CurrentTemplate.OwningStyle == nil {
+			fmt.Println("xsl:apply-imports: no current template or owning stylesheet")
+			return
+		}
+		// Find the next-best template from lower-precedence imports.
+		// Skip templates owned by the current stylesheet or higher-precedence
+		// imports, looking only at imported stylesheets.
+		next := context.Style.lookupTemplateFromImports(context.Current, context.Mode, context, context.CurrentTemplate.OwningStyle)
+		if next != nil {
+			// TODO: determine with-params at compile time
+			var params []*Variable
+			for _, cur := range i.Children {
+				switch p := cur.(type) {
+				case *Variable:
+					if IsXsltName(p.Node, "with-param") {
+						p.Apply(node, context)
+						params = append(params, p)
+					}
+				}
+			}
+			next.Apply(node, context, params)
+		} else {
+			context.Style.processDefaultRule(context.Current, context)
+		}
 	default:
 		hasFallback := false
 		for _, c := range i.Children {
@@ -467,7 +531,7 @@ func (i *XsltInstruction) numbering(node xml.Node, context *ExecutionContext) {
 		}
 	} else {
 
-		target := findTarget(node, count)
+		target := findTarget(node, count, context)
 		v := countNodes(level, target, count, from)
 		numbers = append(numbers, v)
 
@@ -545,9 +609,27 @@ func (i *XsltInstruction) copyToOutput(node xml.Node, context *ExecutionContext,
 			}
 		}
 
-		//copy namespace declarations
+		//copy namespace declarations from this element
 		for _, decl := range node.DeclaredNamespaces() {
 			r.DeclareNamespace(decl.Prefix, decl.Uri)
+		}
+
+		// When deep-copying, also copy in-scope namespace nodes from ancestors
+		// that aren't already declared on the output element.
+		if recursive {
+			declared := make(map[string]bool)
+			for _, decl := range node.DeclaredNamespaces() {
+				declared[decl.Prefix] = true
+			}
+			// Walk ancestors to collect in-scope namespaces
+			for anc := node.Parent(); anc != nil; anc = anc.Parent() {
+				for _, decl := range anc.DeclaredNamespaces() {
+					if !declared[decl.Prefix] {
+						r.DeclareNamespace(decl.Prefix, decl.Uri)
+						declared[decl.Prefix] = true
+					}
+				}
+			}
 		}
 
 		old := context.OutputNode

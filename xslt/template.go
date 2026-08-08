@@ -15,12 +15,13 @@ type CompiledStep interface {
 }
 
 type Template struct {
-	Name     string
-	Mode     string
-	Match    string
-	Priority float64
-	Children []CompiledStep
-	Node     xml.Node
+	Name          string
+	Mode          string
+	Match         string
+	Priority      float64
+	Children      []CompiledStep
+	Node          xml.Node
+	OwningStyle   *Stylesheet // stylesheet that owns this template
 }
 
 // Literal result elements are any elements in a template
@@ -160,6 +161,13 @@ func (e *LiteralResultElement) Apply(node xml.Node, context *ExecutionContext) {
 		_, ns = ResolveAlias(context.Style, prefix, ns)
 		//TODO: handle aliases
 		r.SetNamespace(prefix, ns)
+	} else {
+		// LRE with no explicit namespace should inherit the default
+		// namespace in scope at this point in the stylesheet.
+		defaultNS := context.DefaultNamespace(e.Node)
+		if defaultNS != "" {
+			r.SetNamespace("", defaultNS)
+		}
 	}
 
 	attsets := ""

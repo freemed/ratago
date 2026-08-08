@@ -534,12 +534,14 @@ func (m *CompiledMatch) EvalMatch(node xml.Node, mode string, context *Execution
 				v := strings.Split(val, ",")
 				keyname := strings.Trim(v[0], "\"'")
 				keyval := strings.Trim(v[1], "\"'")
-				key, _ := context.Style.Keys[keyname]
-				if key != nil {
-					o, _ := key.nodes[keyval]
-					for _, n := range o {
-						if cur.NodePtr() == n.NodePtr() {
-							return true
+				keyList, _ := context.Style.Keys[keyname]
+				for _, key := range keyList {
+					if key != nil {
+						o, _ := key.nodes[keyval]
+						for _, n := range o {
+							if cur.NodePtr() == n.NodePtr() {
+								return true
+							}
 						}
 					}
 				}

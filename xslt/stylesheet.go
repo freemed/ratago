@@ -14,6 +14,31 @@ import (
 const XSLT_NAMESPACE = "http://www.w3.org/1999/XSL/Transform"
 const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace"
 
+// terminationError is used by xsl:message terminate="yes" to signal
+// graceful termination of stylesheet processing.
+type terminationError struct {
+	message string
+}
+
+func (e *terminationError) Error() string {
+	return e.message
+}
+
+// DecimalFormat stores xsl:decimal-format settings for format-number().
+type DecimalFormat struct {
+	Name               string
+	DecimalSeparator   string
+	GroupingSeparator  string
+	Infinity           string
+	MinusSign          string
+	NaN                string
+	Percent            string
+	PerMille           string
+	ZeroDigit          string
+	Digit              string
+	PatternSeparator   string
+}
+
 // Stylesheet is an XSLT 1.0 processor.
 type Stylesheet struct {
 	Doc                *xml.XmlDocument
@@ -39,7 +64,8 @@ type Stylesheet struct {
 	CDataElements      []string
 	GlobalParameters   []string
 	includes           map[string]bool
-	Keys               map[string]*Key
+	Keys               map[string][]*Key // allow multiple keys with same name
+	DecimalFormats     map[string]*DecimalFormat
 	OutputMethod       string //html, xml, text
 	DesiredEncoding    string //encoding specified by xsl:output
 	OmitXmlDeclaration bool   //defaults to false
@@ -47,6 +73,7 @@ type Stylesheet struct {
 	Standalone         bool   //defaults to false
 	doctypeSystem      string
 	doctypePublic      string
+	stylesheetUri      string // the URI/path of this stylesheet, for resolving document() in imports
 }
 
 // StylesheetOptions to control processing. Parameters values are passed into
@@ -96,9 +123,11 @@ func ParseStylesheet(doc *xml.XmlDocument, fileuri string) (style *Stylesheet, e
 		NamedTemplates:   make(map[string]*Template),
 		AttributeSets:    make(map[string]CompiledStep),
 		includes:         make(map[string]bool),
-		Keys:             make(map[string]*Key),
+		Keys:             make(map[string][]*Key),
+		DecimalFormats:   make(map[string]*DecimalFormat),
 		Functions:        make(map[string]xpath.XPathFunction),
-		Variables:        make(map[string]*Variable)}
+		Variables:        make(map[string]*Variable),
+		stylesheetUri:    fileuri}
 
 	// register the built-in XSLT functions
 	style.RegisterXsltFunctions()
@@ -144,6 +173,10 @@ func ParseStylesheet(doc *xml.XmlDocument, fileuri string) (style *Stylesheet, e
 	//  actually registered extension namspaces are good!
 	//warn unknown XSLT element (forwards-compatible mode)
 
+	// Merge output settings from imported stylesheets
+	// (importing stylesheet's settings take precedence)
+	style.mergeImportOutputSettings()
+
 	return
 }
 
@@ -179,7 +212,7 @@ func (style *Stylesheet) parseChildren(root xml.Node, fileuri string) (err error
 			use := cur.Attr("use")
 			match := cur.Attr("match")
 			k := &Key{make(map[string]xml.Nodeset), use, match}
-			style.Keys[name] = k
+			style.Keys[name] = append(style.Keys[name], k)
 			continue
 		}
 
@@ -295,7 +328,21 @@ func (style *Stylesheet) parseChildren(root xml.Node, fileuri string) (err error
 		}
 
 		if IsXsltName(cur, "decimal-format") {
-			fmt.Println("GLOBAL TODO ", cur.Name())
+			df := &DecimalFormat{
+				Name:              cur.Attr("name"),
+				DecimalSeparator:  cur.Attr("decimal-separator"),
+				GroupingSeparator: cur.Attr("grouping-separator"),
+				Infinity:          cur.Attr("infinity"),
+				MinusSign:         cur.Attr("minus-sign"),
+				NaN:               cur.Attr("NaN"),
+				Percent:           cur.Attr("percent"),
+				PerMille:          cur.Attr("per-mille"),
+				ZeroDigit:         cur.Attr("zero-digit"),
+				Digit:             cur.Attr("digit"),
+				PatternSeparator:  cur.Attr("pattern-separator"),
+			}
+			// Default name is "" (the unnamed decimal format)
+			style.DecimalFormats[df.Name] = df
 			continue
 		}
 	}
@@ -316,6 +363,41 @@ func (style *Stylesheet) IsExcluded(prefix string) bool {
 	return false
 }
 
+// mergeImportOutputSettings merges xsl:output settings from imported
+// stylesheets. The importing stylesheet's settings take precedence.
+func (style *Stylesheet) mergeImportOutputSettings() {
+	for i := style.Imports.Front(); i != nil; i = i.Next() {
+		s := i.Value.(*Stylesheet)
+		// Recursively merge imports first
+		s.mergeImportOutputSettings()
+		// Only fill in settings that aren't already set in the importing stylesheet
+		if style.OutputMethod == "" && s.OutputMethod != "" {
+			style.OutputMethod = s.OutputMethod
+		}
+		if style.DesiredEncoding == "" && s.DesiredEncoding != "" {
+			style.DesiredEncoding = s.DesiredEncoding
+		}
+		if !style.OmitXmlDeclaration && s.OmitXmlDeclaration {
+			style.OmitXmlDeclaration = s.OmitXmlDeclaration
+		}
+		if !style.IndentOutput && s.IndentOutput {
+			style.IndentOutput = s.IndentOutput
+		}
+		if !style.Standalone && s.Standalone {
+			style.Standalone = s.Standalone
+		}
+		if style.doctypeSystem == "" && s.doctypeSystem != "" {
+			style.doctypeSystem = s.doctypeSystem
+		}
+		if style.doctypePublic == "" && s.doctypePublic != "" {
+			style.doctypePublic = s.doctypePublic
+		}
+		if len(style.CDataElements) == 0 && len(s.CDataElements) > 0 {
+			style.CDataElements = s.CDataElements
+		}
+	}
+}
+
 // Process takes an input document and returns the output produced
 // by executing the stylesheet.
 
@@ -323,6 +405,16 @@ func (style *Stylesheet) IsExcluded(prefix string) bool {
 // serialized string is returned. Consideration is being given
 // to returning a slice of bytes and encoding information.
 func (style *Stylesheet) Process(doc *xml.XmlDocument, options StylesheetOptions) (out string, err error) {
+	// Recover from xsl:message terminate=yes gracefully
+	defer func() {
+		if r := recover(); r != nil {
+			if term, ok := r.(*terminationError); ok {
+				err = fmt.Errorf("xsl:message terminated: %s", term.message)
+			} else {
+				panic(r) // re-panic unknown panics
+			}
+		}
+	}()
 	// lookup output method, doctypes, encoding
 	// create output document with appropriate values
 	output := xml.CreateEmptyDocument(doc.InputEncoding(), doc.OutputEncoding())
@@ -551,6 +643,13 @@ func (style *Stylesheet) RegisterAttributeSet(node xml.Node) {
 	name := node.Attr("name")
 	res := CompileSingleNode(node)
 	res.Compile(node)
+	// If an imported stylesheet already has this attribute set, merge:
+	// importing set's attributes are used in addition to imported ones.
+	// However since we use a simple map, the importing stylesheet's full
+	// compiled set replaces the imported one. Use-attribute-sets references
+	// from importing set will chain properly because LookupAttributeSet
+	// falls through to imports. So we just store it and trust the import
+	// chain to handle composition when use-attribute-sets is evaluated.
 	style.AttributeSets[name] = res
 }
 
@@ -582,6 +681,11 @@ func (style *Stylesheet) processDefaultRule(node xml.Node, context *ExecutionCon
 			context.OutputNode.AddChild(r)
 		}
 	}
+	//default for ATTRIBUTE is to output its value as text
+	if node.NodeType() == xml.XML_ATTRIBUTE_NODE {
+		r := context.Output.CreateTextNode(node.Content())
+		context.OutputNode.AddChild(r)
+	}
 	//default for namespace declaration is copy to output document
 }
 
@@ -599,37 +703,42 @@ func (style *Stylesheet) processNode(node xml.Node, context *ExecutionContext, p
 		return
 	}
 	//apply template to current node
+	oldTemplate := context.CurrentTemplate
+	context.CurrentTemplate = template
 	template.Apply(node, context, params)
+	context.CurrentTemplate = oldTemplate
 }
 
 func (style *Stylesheet) populateKeys(node xml.Node, context *ExecutionContext) {
-	for _, key := range style.Keys {
-		//see if the current node matches
-		matches := CompileMatch(key.match, nil)
-		hasMatch := false
-		for _, m := range matches {
-			if m.EvalMatch(node, "", context) {
-				hasMatch = true
-				break
+	for _, keyList := range style.Keys {
+		for _, key := range keyList {
+			//see if the current node matches
+			matches := CompileMatch(key.match, nil)
+			hasMatch := false
+			for _, m := range matches {
+				if m.EvalMatch(node, "", context) {
+					hasMatch = true
+					break
+				}
 			}
-		}
-		if !hasMatch {
-			continue
-		}
-		lookupkey, _ := node.EvalXPath(key.use, context)
-		lookup := ""
-		switch lk := lookupkey.(type) {
-		case []xml.Node:
-			if len(lk) == 0 {
+			if !hasMatch {
 				continue
 			}
-			lookup = lk[0].String()
-		case string:
-			lookup = lk
-		default:
-			lookup = fmt.Sprintf("%v", lk)
+			lookupkey, _ := node.EvalXPath(key.use, context)
+			lookup := ""
+			switch lk := lookupkey.(type) {
+			case []xml.Node:
+				if len(lk) == 0 {
+					continue
+				}
+				lookup = lk[0].String()
+			case string:
+				lookup = lk
+			default:
+				lookup = fmt.Sprintf("%v", lk)
+			}
+			key.nodes[lookup] = append(key.nodes[lookup], node)
 		}
-		key.nodes[lookup] = append(key.nodes[lookup], node)
 	}
 	children := context.ChildrenOf(node)
 	for _, cur := range children {
@@ -651,7 +760,7 @@ func (style *Stylesheet) ParseTemplate(node xml.Node) {
 	}
 
 	// TODO: validate the name (duplicate should raise error)
-	template := &Template{Match: match, Mode: mode, Name: name, Priority: p, Node: node}
+	template := &Template{Match: match, Mode: mode, Name: name, Priority: p, Node: node, OwningStyle: style}
 
 	template.CompileContent(node)
 
@@ -661,6 +770,11 @@ func (style *Stylesheet) ParseTemplate(node xml.Node) {
 
 func (style *Stylesheet) compilePattern(template *Template, priority string) {
 	if template.Name != "" {
+		if _, exists := style.NamedTemplates[template.Name]; exists {
+			// XSLT 1.0 spec: duplicate named templates are an error
+			err := fmt.Errorf("duplicate named template: %s", template.Name)
+			panic(err)
+		}
 		style.NamedTemplates[template.Name] = template
 	}
 
@@ -722,6 +836,29 @@ func insertByPriority(l *list.List, match *CompiledMatch) {
 	}
 	//either list is empty, or we're lowest priority template
 	l.PushBack(match)
+}
+
+// lookupTemplateFromImports finds a matching template from imported stylesheets
+// only, skipping the given "skipStyle" (the importing stylesheet) and any
+// higher-precedence imports. Used by xsl:apply-imports.
+func (style *Stylesheet) lookupTemplateFromImports(node xml.Node, mode string, context *ExecutionContext, skipStyle *Stylesheet) *Template {
+	// Walk imports in order; when we find the skip target, only look at later imports
+	foundSkip := false
+	for i := style.Imports.Front(); i != nil; i = i.Next() {
+		s := i.Value.(*Stylesheet)
+		if s == skipStyle {
+			foundSkip = true
+			continue
+		}
+		if !foundSkip {
+			continue
+		}
+		t := s.LookupTemplate(node, mode, context)
+		if t != nil {
+			return t
+		}
+	}
+	return nil
 }
 
 // Locate an attribute set by name

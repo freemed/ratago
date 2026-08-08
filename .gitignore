@@ -24,3 +24,6 @@ ratago
 
 go.sum
 
+# Hermes agent working files (do not commit)
+.hermes/
+

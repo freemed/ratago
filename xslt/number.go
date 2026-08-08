@@ -57,15 +57,16 @@ func (n RomanNumber) String() (out string) {
 	return out
 }
 
-//TODO: breaks after 701
+// Convert a positive integer to an alphabetic index (a, b, ..., z, aa, ab, ...)
 func toAlphaIndex(n int) (out string) {
-	w := n
-	for w > 26 {
-		i := w / 26
-		w = w - (i * 26)
-		out = out + aLetter[i]
+	if n <= 0 {
+		return ""
 	}
-	out = out + aLetter[w]
+	for n > 0 {
+		n--
+		out = string(rune('a'+n%26)) + out
+		n /= 26
+	}
 	return
 }
 
@@ -151,10 +152,14 @@ type fmtToken struct {
 }
 
 func formatNumbers(numbers []int, format string) (out string) {
-	//TODO: special cases: no numbers, punctuation-only format token
 	if format == "" {
 		format = "1"
 	}
+	// No numbers to format
+	if len(numbers) == 0 {
+		return ""
+	}
+
 	tokens := parseFormatString(format)
 
 	// capture the last numeric format token
@@ -252,11 +257,24 @@ func matchesOne(node xml.Node, patterns []*CompiledMatch) bool {
 	return false
 }
 
-func findTarget(node xml.Node, count string) (target xml.Node) {
+func findTarget(node xml.Node, count string, context *ExecutionContext) (target xml.Node) {
 	countExpr := CompileMatch(count, nil)
+	// Resolve QName if needed
+	if !strings.Contains(count, ":") && count != "*" && count != "" &&
+		count != "node()" && count != "text()" && count != "comment()" &&
+		count != "processing-instruction()" {
+		// This is a simple name; try matching directly
+	}
 	for cur := node; cur != nil; cur = cur.Parent() {
 		if matchesOne(cur, countExpr) {
 			return cur
+		}
+		// Also check with namespace resolution
+		if context != nil {
+			ns, name := context.ResolveQName(count)
+			if ns != "" && cur.Namespace() == ns && cur.Name() == name {
+				return cur
+			}
 		}
 	}
 	return
