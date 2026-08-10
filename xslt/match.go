@@ -463,6 +463,18 @@ func (m *CompiledMatch) EvalMatch(node xml.Node, mode string, context *Execution
 				}
 				if prev.Op == OP_ELEM || prev.Op == OP_ALL {
 					parent := cur.Parent()
+					if parent == nil {
+						// root element has no parent; cannot evaluate position predicate
+						if step.Value == "last()" {
+							// Root is always the only element at its level
+							continue
+						}
+						postest, err := strconv.Atoi(step.Value)
+						if err == nil && postest == 1 {
+							continue
+						}
+						return false
+					}
 					sibs := context.ChildrenOf(parent)
 					var clen, pos int
 					for _, n := range sibs {

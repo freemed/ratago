@@ -133,7 +133,11 @@ func ParseStylesheet(doc *xml.XmlDocument, fileuri string) (style *Stylesheet, e
 	style.RegisterXsltFunctions()
 
 	//XsltParseStylesheetProcess
-	cur := xml.Node(doc.Root())
+	cur := doc.Root()
+	if cur == nil {
+		// empty document, nothing to parse
+		return
+	}
 
 	// get all the namespace mappings
 	for _, ns := range cur.DeclaredNamespaces() {
@@ -160,7 +164,7 @@ func ParseStylesheet(doc *xml.XmlDocument, fileuri string) (style *Stylesheet, e
 	//if the root is an LRE, this is an simplified stylesheet
 	if !IsXsltName(cur, "stylesheet") && !IsXsltName(cur, "transform") {
 		template := &Template{Match: "/", Priority: 0}
-		template.CompileContent(doc)
+		template.CompileContent(doc.Root())
 		style.compilePattern(template, "")
 		return
 	}
@@ -428,17 +432,22 @@ func (style *Stylesheet) Process(doc *xml.XmlDocument, options StylesheetOptions
 	// create output document with appropriate values
 	output := xml.CreateEmptyDocument(doc.InputEncoding(), doc.OutputEncoding())
 	// init context node/document
-	context := &ExecutionContext{Output: output.Me, OutputNode: output, Style: style, Source: doc}
-	context.Current = doc
+	context := &ExecutionContext{Output: output.Me, OutputNode: output.Node, Style: style, Source: doc}
+	context.Current = doc.Root()
 	context.XPathContext = doc.DocXPathCtx()
 	// when evaluating keys/global vars position is always 1
 	context.XPathContext.SetContextPosition(1, 1)
-	start := doc
+	start := doc.Root()
+	if start == nil {
+		// empty source document, nothing to process
+		out, err = style.constructOutput(output, options)
+		return
+	}
 	style.populateKeys(start, context)
 	// eval global params
 	// eval global variables
 	for _, val := range style.Variables {
-		val.Apply(doc, context)
+		val.Apply(doc.Root(), context)
 	}
 
 	// for each global parameter
@@ -489,7 +498,10 @@ func (style *Stylesheet) constructOutput(output *xml.XmlDocument, options Styles
 	docType := ""
 	if style.doctypeSystem != "" {
 		docType = "<!DOCTYPE "
-		docType = docType + output.Root().Name()
+		root := output.Root()
+		if root != nil {
+			docType = docType + root.Name()
+		}
 		if style.doctypePublic != "" {
 			docType = docType + fmt.Sprintf(" PUBLIC \"%s\"", style.doctypePublic)
 		} else {
@@ -501,6 +513,11 @@ func (style *Stylesheet) constructOutput(output *xml.XmlDocument, options Styles
 
 	// create the XML declaration depending on xsl:output settings
 	decl := ""
+	if output.Node == nil {
+		// empty output document, no nodes to serialize
+		out = decl + docType
+		return
+	}
 	if outputType == "xml" {
 		if !style.OmitXmlDeclaration {
 			decl = style.constructXmlDeclaration()
@@ -515,7 +532,7 @@ func (style *Stylesheet) constructOutput(output *xml.XmlDocument, options Styles
 		//TODO: honor desired encoding
 		//  this involves decisions about supported encodings, strings vs byte slices
 		//  we can sidestep a little if we enable option to write directly to file
-		for cur := output.FirstChild(); cur != nil; cur = cur.NextSibling() {
+		for cur := output.Node.FirstChild(); cur != nil; cur = cur.NextSibling() {
 			b, size := cur.SerializeWithFormat(format, nil, nil)
 			if b != nil {
 				out = out + string(b[:size])
@@ -527,12 +544,12 @@ func (style *Stylesheet) constructOutput(output *xml.XmlDocument, options Styles
 	}
 	if outputType == "html" {
 		out = docType
-		b, size := output.ToHtml(nil, nil)
+		b, size := output.Node.ToHtml(nil, nil)
 		out = out + string(b[:size])
 	}
 	if outputType == "text" {
 		format := xml.XML_SAVE_NO_DECL
-		for cur := output.FirstChild(); cur != nil; cur = cur.NextSibling() {
+		for cur := output.Node.FirstChild(); cur != nil; cur = cur.NextSibling() {
 			b, size := cur.SerializeWithFormat(format, nil, nil)
 			if b != nil {
 				out = out + string(b[:size])
@@ -699,6 +716,9 @@ func (style *Stylesheet) processDefaultRule(node xml.Node, context *ExecutionCon
 }
 
 func (style *Stylesheet) processNode(node xml.Node, context *ExecutionContext, params []*Variable) {
+	if node == nil {
+		return
+	}
 	//get template
 	template := style.LookupTemplate(node, context.Mode, context)
 	//  for each import scope
@@ -719,6 +739,9 @@ func (style *Stylesheet) processNode(node xml.Node, context *ExecutionContext, p
 }
 
 func (style *Stylesheet) populateKeys(node xml.Node, context *ExecutionContext) {
+	if node == nil {
+		return
+	}
 	for _, keyList := range style.Keys {
 		for _, key := range keyList {
 			//see if the current node matches

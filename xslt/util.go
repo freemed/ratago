@@ -2,11 +2,11 @@ package xslt
 
 import (
 	"github.com/freemed/gokogiri/xml"
-	"io/ioutil"
+	"os"
 )
 
 func xmlReadFile(filename string) (doc *xml.XmlDocument, err error) {
-	data, err := ioutil.ReadFile(filename)
+	data, err := os.ReadFile(filename)
 	if err != nil {
 		return
 	}

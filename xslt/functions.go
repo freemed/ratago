@@ -142,21 +142,21 @@ func XsltDocumentFn(context xpath.VariableScope, args []interface{}) interface{}
 	switch doc := args[0].(type) {
 	case string:
 		if doc == "" {
-			nodeset := xml.Nodeset{c.Style.Doc}
-			return nodeset.ToPointers()
-		}
-		input := c.FetchInputDocument(doc, false)
-		if input != nil {
-			nodeset := xml.Nodeset{input}
-			return nodeset.ToPointers()
-		}
-		return nil
-	case []unsafe.Pointer:
-		n := xml.NewNode(doc[0], nil)
-		location := n.Content()
-		input := c.FetchInputDocument(location, true)
-		if input != nil {
-			nodeset := xml.Nodeset{input}
+			nodeset := xml.Nodeset{c.Style.Doc.Node}
+				return nodeset.ToPointers()
+			}
+			input := c.FetchInputDocument(doc, false)
+			if input != nil {
+				nodeset := xml.Nodeset{input.Node}
+				return nodeset.ToPointers()
+			}
+			return nil
+			case []interface{}:
+			n := xml.NewNode(doc[0].(*xml.InternalNode), nil)
+			location := n.Content()
+			input := c.FetchInputDocument(location, true)
+			if input != nil {
+				nodeset := xml.Nodeset{input.Node}
 			return nodeset.ToPointers()
 		}
 		fmt.Println("DOCUMENT", location)
@@ -175,18 +175,18 @@ func XsltGenerateId(context xpath.VariableScope, args []interface{}) interface{}
 	// When called with no argument, generate-id for the context node
 	if len(args) < 1 {
 		if c.Current != nil {
-			out := fmt.Sprintf("N%v", uintptr(c.Current.NodePtr()))
+			out := fmt.Sprintf("N%p", c.Current.NodePtr())
 			return out
 		}
 		return "N"
 	}
 
 	switch v := args[0].(type) {
-	case []unsafe.Pointer:
+	case []interface{}:
 		if len(v) == 0 {
 			return nil
 		}
-		out := fmt.Sprintf("N%v", uintptr(v[0]))
+		out := fmt.Sprintf("N%p", v[0])
 		return out
 	default:
 		return nil
@@ -268,11 +268,11 @@ func argValToString(val interface{}) (out string) {
 	switch v := val.(type) {
 	case string:
 		return v
-	case []unsafe.Pointer:
+	case []interface{}:
 		if len(v) == 0 {
 			return
 		}
-		n := xml.NewNode(v[0], nil)
+		n := xml.NewNode(v[0].(*xml.InternalNode), nil)
 		out = n.Content()
 	default:
 		out = fmt.Sprintf("%v", v)
@@ -287,13 +287,13 @@ func EXSLTnodeset(context xpath.VariableScope, args []interface{}) interface{} {
 	c := context.(*ExecutionContext)
 	nodes := args[0]
 	switch v := nodes.(type) {
-	case []unsafe.Pointer:
+	case []interface{}:
 		if len(v) == 0 {
 			return nil
 		}
 		fauxroot := c.Output.CreateElementNode("VARIABLE")
 		for _, node := range v {
-			n := xml.NewNode(node, nil)
+			n := xml.NewNode(node.(*xml.InternalNode), nil)
 			fauxroot.AddChild(n)
 		}
 		out := xml.Nodeset{fauxroot}
@@ -366,10 +366,10 @@ func EXSLTmathabs(context xpath.VariableScope, args []interface{}) interface{} {
 // Returns NaN for nodes that can't be parsed as numbers.
 func nodeSetToFloat64s(arg interface{}) []float64 {
 	switch v := arg.(type) {
-	case []unsafe.Pointer:
+	case []interface{}:
 		result := make([]float64, 0, len(v))
 		for _, ptr := range v {
-			n := xml.NewNode(ptr, nil)
+			n := xml.NewNode(ptr.(*xml.InternalNode), nil)
 			f, err := strconv.ParseFloat(strings.TrimSpace(n.String()), 64)
 			if err != nil {
 				result = append(result, math.NaN())
@@ -534,7 +534,7 @@ func EXSLTmathhighest(context xpath.VariableScope, args []interface{}) interface
 	if len(args) < 1 {
 		return nil
 	}
-	nodes, ok := args[0].([]unsafe.Pointer)
+	nodes, ok := args[0].([]interface{})
 	if !ok || len(nodes) == 0 {
 		return nil
 	}
@@ -550,7 +550,7 @@ func EXSLTmathhighest(context xpath.VariableScope, args []interface{}) interface
 		}
 	}
 	// Collect all nodes with that value
-	var result []unsafe.Pointer
+	var result []interface{}
 	for i, v := range values {
 		if v == max {
 			result = append(result, nodes[i])
@@ -563,7 +563,7 @@ func EXSLTmathlowest(context xpath.VariableScope, args []interface{}) interface{
 	if len(args) < 1 {
 		return nil
 	}
-	nodes, ok := args[0].([]unsafe.Pointer)
+	nodes, ok := args[0].([]interface{})
 	if !ok || len(nodes) == 0 {
 		return nil
 	}
@@ -579,7 +579,7 @@ func EXSLTmathlowest(context xpath.VariableScope, args []interface{}) interface{
 		}
 	}
 	// Collect all nodes with that value
-	var result []unsafe.Pointer
+	var result []interface{}
 	for i, v := range values {
 		if v == min {
 			result = append(result, nodes[i])
@@ -601,7 +601,7 @@ func EXSLTobjectType(context xpath.VariableScope, args []interface{}) interface{
 		return "number"
 	case bool:
 		return "boolean"
-	case []unsafe.Pointer:
+	case []interface{}:
 		return "node-set"
 	default:
 		return "string"
@@ -610,18 +610,18 @@ func EXSLTobjectType(context xpath.VariableScope, args []interface{}) interface{
 
 // ---------- EXSLT Sets ----------
 
-// nodeSetFromPointers converts []unsafe.Pointer to a flat slice of nodesets
+// nodeSetFromPointers converts []interface{} to a flat slice of nodesets
 // by extracting the root pointers.
-func nodeSetFromPointers(arg interface{}) ([]unsafe.Pointer, bool) {
+func nodeSetFromPointers(arg interface{}) ([]interface{}, bool) {
 	switch v := arg.(type) {
-	case []unsafe.Pointer:
+	case []interface{}:
 		return v, true
 	}
 	return nil, false
 }
 
 // inNodeSet checks if a pointer exists in a node-set by identity.
-func inNodeSet(set []unsafe.Pointer, ptr unsafe.Pointer) bool {
+func inNodeSet(set []interface{}, ptr interface{}) bool {
 	for _, p := range set {
 		if p == ptr {
 			return true
@@ -639,7 +639,7 @@ func EXSLTsetDifference(context xpath.VariableScope, args []interface{}) interfa
 	if !ok1 || !ok2 {
 		return nil
 	}
-	var result []unsafe.Pointer
+	var result []interface{}
 	for _, p := range n1 {
 		if !inNodeSet(n2, p) {
 			result = append(result, p)
@@ -657,7 +657,7 @@ func EXSLTsetIntersection(context xpath.VariableScope, args []interface{}) inter
 	if !ok1 || !ok2 {
 		return nil
 	}
-	var result []unsafe.Pointer
+	var result []interface{}
 	for _, p := range n1 {
 		if inNodeSet(n2, p) {
 			result = append(result, p)
@@ -675,9 +675,9 @@ func EXSLTsetDistinct(context xpath.VariableScope, args []interface{}) interface
 		return nil
 	}
 	seen := make(map[string]bool)
-	var result []unsafe.Pointer
+	var result []interface{}
 	for _, p := range nodes {
-		n := xml.NewNode(p, nil)
+		n := xml.NewNode(p.(*xml.InternalNode), nil)
 		val := strings.TrimSpace(n.String())
 		if !seen[val] {
 			seen[val] = true
@@ -719,15 +719,15 @@ func EXSLTsetLeading(context xpath.VariableScope, args []interface{}) interface{
 	// so the smallest pointer comes first.
 	firstPtr := n2[0]
 	for _, p := range n2[1:] {
-		if uintptr(p) < uintptr(firstPtr) {
+		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) < uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
 			firstPtr = p
 		}
 	}
 
 	// Return nodes from n1 that come before firstPtr in document order.
-	var result []unsafe.Pointer
+	var result []interface{}
 	for _, p := range n1 {
-		if uintptr(p) < uintptr(firstPtr) {
+		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) < uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
 			result = append(result, p)
 		}
 	}
@@ -747,15 +747,15 @@ func EXSLTsetTrailing(context xpath.VariableScope, args []interface{}) interface
 	// Find the first node from n2 in document order.
 	firstPtr := n2[0]
 	for _, p := range n2[1:] {
-		if uintptr(p) < uintptr(firstPtr) {
+		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) < uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
 			firstPtr = p
 		}
 	}
 
 	// Return nodes from n1 that come after firstPtr in document order.
-	var result []unsafe.Pointer
+	var result []interface{}
 	for _, p := range n1 {
-		if uintptr(p) > uintptr(firstPtr) {
+		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) > uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
 			result = append(result, p)
 		}
 	}
@@ -780,7 +780,7 @@ func EXSLTstrConcat(context xpath.VariableScope, args []interface{}) interface{}
 	}
 	var parts []string
 	for _, p := range nodes {
-		n := xml.NewNode(p, nil)
+		n := xml.NewNode(p.(*xml.InternalNode), nil)
 		parts = append(parts, n.String())
 	}
 	return strings.Join(parts, sep)
@@ -902,9 +902,9 @@ func EXSLTdynEvaluate(context xpath.VariableScope, args []interface{}) interface
 	evalNode := c.Current
 	if len(args) >= 2 {
 		switch v := args[1].(type) {
-		case []unsafe.Pointer:
+		case []interface{}:
 			if len(v) > 0 {
-				evalNode = xml.NewNode(v[0], nil)
+				evalNode = xml.NewNode(v[0].(*xml.InternalNode), nil)
 			}
 		}
 	}

@@ -28,7 +28,7 @@ func (uf *UserFunction) Apply(context xpath.VariableScope, args []interface{}) i
 	oldOutput := c.Output
 	oldOutputNode := c.OutputNode
 	c.Output = output
-	c.OutputNode = output
+	c.OutputNode = output.Node
 
 	// Push local variable scope for parameters
 	c.PushStack()

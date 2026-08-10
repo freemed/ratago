@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/freemed/gokogiri/xml"
 	"github.com/freemed/gokogiri/xpath"
@@ -854,7 +853,7 @@ func EXSLTdateDuration(context xpath.VariableScope, args []interface{}) interfac
 		d.Minutes = int(rem) / 60
 		d.Seconds = rem - float64(d.Minutes*60)
 		return d.format()
-	case []unsafe.Pointer:
+	case []interface{}:
 		s := argValToString(v)
 		dur, ok := parseEXSLTDuration(s)
 		if !ok {
@@ -881,7 +880,7 @@ func EXSLTdateSum(context xpath.VariableScope, args []interface{}) interface{} {
 	}
 	var total float64
 	for _, p := range nodes {
-		n := xml.NewNode(p, nil)
+		n := xml.NewNode(p.(*xml.InternalNode), nil)
 		s := strings.TrimSpace(n.String())
 		dur, ok := parseEXSLTDuration(s)
 		if ok {
@@ -901,12 +900,12 @@ func EXSLTdateSeconds(context xpath.VariableScope, args []interface{}) interface
 		return nil
 	}
 	switch v := args[0].(type) {
-	case []unsafe.Pointer:
+	case []interface{}:
 		// Sum seconds of all node values
 		nodes, _ := nodeSetFromPointers(v)
 		var total float64
 		for _, p := range nodes {
-			n := xml.NewNode(p, nil)
+			n := xml.NewNode(p.(*xml.InternalNode), nil)
 			s := strings.TrimSpace(n.String())
 			dur, ok := parseEXSLTDuration(s)
 			if ok {

@@ -8,7 +8,6 @@ import (
 	"github.com/freemed/gokogiri/xpath"
 	"path/filepath"
 	"strings"
-	"unsafe"
 )
 
 // ExecutionContext is passed to XSLT instructions during processing.
@@ -52,7 +51,7 @@ func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (
 			}
 			var output []xml.Node
 			for _, nodePtr := range nodePtrs {
-				output = append(output, xml.NewNode(nodePtr, xmlNode.MyDocument()))
+				output = append(output, xml.NewNode(nodePtr.(*xml.InternalNode), xmlNode.MyDocument()))
 			}
 			result = output
 		case xpath.XPATH_NUMBER:
@@ -120,7 +119,7 @@ func (context *ExecutionContext) EvalXPathAsNodeset(xmlNode xml.Node, data inter
 	}
 	var output xml.Nodeset
 	for _, nodePtr := range nodePtrs {
-		output = append(output, xml.NewNode(nodePtr, xmlNode.MyDocument()))
+		output = append(output, xml.NewNode(nodePtr.(*xml.InternalNode), xmlNode.MyDocument()))
 	}
 	result = output
 	return
@@ -147,7 +146,9 @@ func (context *ExecutionContext) EvalXPathAsString(xmlNode xml.Node, data interf
 // ChildrenOf returns the node children, ignoring any whitespace-only text nodes that
 // are stripped by strip-space or xml:space
 func (context *ExecutionContext) ChildrenOf(node xml.Node) (children []xml.Node) {
-
+	if node == nil {
+		return
+	}
 	for cur := node.FirstChild(); cur != nil; cur = cur.NextSibling() {
 		//don't count stripped nodes
 		if context.ShouldStrip(cur) {
@@ -273,10 +274,10 @@ func (context *ExecutionContext) ResolveVariable(name, ns string) (ret interface
 
 	switch val := v.Value.(type) {
 	case xml.Nodeset:
-		return unsafe.Pointer(val.ToXPathNodeset())
+		return val.ToXPathNodeset()
 	case []xml.Node:
 		nodeset := xml.Nodeset(val)
-		return unsafe.Pointer(nodeset.ToXPathNodeset())
+		return nodeset.ToXPathNodeset()
 	default:
 		return val
 	}

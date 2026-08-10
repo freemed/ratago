@@ -1,4 +1,4 @@
-github.com/freemed/gokogiri/util v0.0.0-20251130225105-1c0457d97f4b h1:bmO4cmTUKhicgpwOPijy1uPHDCd8TeYBagNWdvM4vn8=
-github.com/freemed/gokogiri/util v0.0.0-20251130225105-1c0457d97f4b/go.mod h1:Ejse5Y6jJeTcV3aePY3PY5QbfSrDpWl8Qsm9F+lNSBo=
-github.com/freemed/gokogiri/util v0.0.0-20251209120151-edc422feefb4 h1:TrwEIkr5jSR/nac52lgkyF3ViaBTkoWDQNk96fG/35I=
-github.com/freemed/gokogiri/util v0.0.0-20251209120151-edc422feefb4/go.mod h1:Ejse5Y6jJeTcV3aePY3PY5QbfSrDpWl8Qsm9F+lNSBo=
+golang.org/x/net v0.57.0 h1:K5+3DljvIuDG9/Jv9rvyMywYNFCQ9RSUY6OOTTkT+tE=
+golang.org/x/net v0.57.0/go.mod h1:KpXc8iv+r3XplLAG/f7Jsf9RPszJzdR0f58q9vGOuEU=
+golang.org/x/text v0.40.0 h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=
+golang.org/x/text v0.40.0/go.mod h1:hpnzDAfGV753zIKo+wk3u1bVKCGPbrnF7+7LBF/UHVY=
