@@ -65,6 +65,15 @@ func (i *Variable) Apply(node xml.Node, context *ExecutionContext) {
 	// if @select
 	if scope != "" {
 		e := xpath.Compile(scope)
+		// If compilation fails (e.g. $variable references not supported
+		// by antchfx/xpath), try substituting known scalar variables and
+		// re-compiling.
+		if e == nil && strings.Contains(scope, "$") {
+			substituted := context.substituteScalarVars(scope)
+			if substituted != scope {
+				e = xpath.Compile(substituted)
+			}
+		}
 		var err error
 		context.RegisterXPathNamespaces(i.Node)
 		i.Value, err = context.EvalXPath(node, e)

@@ -296,7 +296,7 @@ func lexParent(l *lexer) stateFn {
 	}
 	if l.start == 0 {
 		l.emit(OP_ROOT)
-		//return lexNodeTest
+		return lexNodeTest
 	}
 	l.emit(OP_PARENT)
 	return lexNodeTest
@@ -381,7 +381,7 @@ func (m *CompiledMatch) EvalMatch(node xml.Node, mode string, context *Execution
 		case OP_END:
 			return true
 		case OP_ROOT:
-			if cur.NodeType() != xml.XML_DOCUMENT_NODE {
+			if cur.NodeType() != xml.XML_DOCUMENT_NODE && cur.Parent() != nil {
 				return false
 			}
 		case OP_ELEM:

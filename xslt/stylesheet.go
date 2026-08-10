@@ -433,40 +433,36 @@ func (style *Stylesheet) Process(doc *xml.XmlDocument, options StylesheetOptions
 	output := xml.CreateEmptyDocument(doc.InputEncoding(), doc.OutputEncoding())
 	// init context node/document
 	context := &ExecutionContext{Output: output.Me, OutputNode: output.Node, Style: style, Source: doc}
+	context.Current = doc.Root()
 	context.XPathContext = doc.DocXPathCtx()
 	// when evaluating keys/global vars position is always 1
 	context.XPathContext.SetContextPosition(1, 1)
-	// Create a document-level node wrapper so that XPaths like
-	// "sales/division" resolve correctly from the document root.
-	// doc.Root() returns the root element, but XSLT requires the
-	// initial context node to be the document node (/).
-	rootElem := doc.Root()
-	if rootElem == nil {
+	start := doc.Root()
+	if start == nil {
 		// empty source document, nothing to process
 		out, err = style.constructOutput(output, options)
 		return
 	}
-	internalDoc := doc.DocPtr().(*xml.InternalDoc)
-	docNodeInner := &xml.InternalNode{
-		Typ:      xml.XML_DOCUMENT_NODE,
-		Doc:      internalDoc,
-		Children: internalDoc.Root,
-		Last:     internalDoc.Root,
-		Valid:    true,
-	}
-	// Link the root element's parent to the document node so that
-	// LookupTemplate can distinguish root elements reached as children
-	// of the document from top-level root elements.
-	if internalDoc.Root != nil {
-		internalDoc.Root.Parent = docNodeInner
-	}
-	start := xml.NewNode(docNodeInner, doc)
-	context.Current = start
 	style.populateKeys(start, context)
-	// eval global params
-	// eval global variables
-	for _, val := range style.Variables {
-		val.Apply(doc.Root(), context)
+	// eval global params and variables in dependency order.
+	// antchfx/xpath does not support $variable references, so variables
+	// with select expressions referencing other variables must be
+	// evaluated after their dependencies. Use multiple passes: evaluate
+	// variables that succeed, skip those that fail, and retry.
+	for pass := 0; pass < 10; pass++ {
+		anyEvaluated := false
+		for _, val := range style.Variables {
+			if val.Value != nil {
+				continue // already evaluated
+			}
+			val.Apply(doc.Root(), context)
+			if val.Value != nil {
+				anyEvaluated = true
+			}
+		}
+		if !anyEvaluated {
+			break
+		}
 	}
 
 	// for each global parameter
@@ -583,10 +579,24 @@ func (style *Stylesheet) constructOutput(output *xml.XmlDocument, options Styles
 // If there is no matching template, nil is returned.
 func (style *Stylesheet) LookupTemplate(node xml.Node, mode string, context *ExecutionContext) (template *Template) {
 	name := node.Name()
-	if node.NodeType() == xml.XML_DOCUMENT_NODE {
-		name = "/"
-	}
 	found := new(list.List)
+
+	// When the root element (no parent) is the current node, also check
+	// templates registered under "/" (match="/") since the root element
+	// serves as the document root in XSLT processing.
+	if node.NodeType() == xml.XML_DOCUMENT_NODE || (node.NodeType() == xml.XML_ELEMENT_NODE && node.Parent() == nil) {
+		rootList := style.ElementMatches["/"]
+		if rootList != nil {
+			for i := rootList.Front(); i != nil; i = i.Next() {
+				c := i.Value.(*CompiledMatch)
+				if c.EvalMatch(node, mode, context) {
+					insertByPriority(found, c)
+					break
+				}
+			}
+		}
+	}
+
 	l := style.ElementMatches[name]
 	if l != nil {
 		for i := l.Front(); i != nil; i = i.Next() {
