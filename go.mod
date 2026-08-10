@@ -12,13 +12,13 @@ replace (
 )
 
 require (
-	github.com/freemed/gokogiri/xml v0.0.0-20260810185137-6692e94708c7
+	github.com/freemed/gokogiri/xml v0.0.0-20260810213003-a5eae79f1d2e
 	github.com/freemed/ratago/xslt v0.0.0-20251209120218-62d49e66fc88
 )
 
 require (
 	github.com/antchfx/xpath v1.3.8 // indirect
-	github.com/freemed/gokogiri/xpath v0.0.0-20260810185137-6692e94708c7 // indirect
+	github.com/freemed/gokogiri/xpath v0.0.0-20260810213003-a5eae79f1d2e // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )
