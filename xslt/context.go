@@ -27,11 +27,36 @@ type ExecutionContext struct {
 func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (result interface{}, err error) {
 	switch data := data.(type) {
 	case string:
-		if xpathExpr := xpath.Compile(data); xpathExpr != nil {
+		// Pre-process XPath: substitute $variables, position(), last()
+		xpathStr := context.preprocessXPath(data)
+		// Use namespace-aware compilation only when the expression
+		// actually contains namespace prefixes, to avoid a known
+		// antchfx parser issue with certain expression patterns.
+		var xpathExpr *xpath.Expression
+		if len(context.Style.NamespaceMapping) > 0 {
+			nsMap := make(map[string]string)
+			hasPrefix := false
+			for uri, prefix := range context.Style.NamespaceMapping {
+				if prefix != "" {
+					nsMap[prefix] = uri
+					if strings.Contains(xpathStr, prefix+":") {
+						hasPrefix = true
+					}
+				}
+			}
+			if hasPrefix {
+				xpathExpr = xpath.CompileWithNS(xpathStr, nsMap)
+			} else {
+				xpathExpr = xpath.Compile(xpathStr)
+			}
+		} else {
+			xpathExpr = xpath.Compile(xpathStr)
+		}
+		if xpathExpr != nil {
 			defer xpathExpr.Free()
 			result, err = context.EvalXPath(xmlNode, xpathExpr)
 		} else {
-			err = errors.New("cannot compile xpath: " + data)
+			err = errors.New("cannot compile xpath: " + xpathStr)
 		}
 	case []byte:
 		result, err = context.EvalXPath(xmlNode, string(data))
@@ -51,7 +76,7 @@ func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (
 			}
 			var output []xml.Node
 			for _, nodePtr := range nodePtrs {
-				output = append(output, xml.NewNode(nodePtr.(*xml.InternalNode), xmlNode.MyDocument()))
+				output = append(output, context.nodeFromResult(nodePtr, xmlNode))
 			}
 			result = output
 		case xpath.XPATH_NUMBER:
@@ -119,10 +144,39 @@ func (context *ExecutionContext) EvalXPathAsNodeset(xmlNode xml.Node, data inter
 	}
 	var output xml.Nodeset
 	for _, nodePtr := range nodePtrs {
-		output = append(output, xml.NewNode(nodePtr.(*xml.InternalNode), xmlNode.MyDocument()))
+		output = append(output, context.nodeFromResult(nodePtr, xmlNode))
 	}
 	result = output
 	return
+}
+
+// nodeFromResult converts an XPath result node pointer to an xml.Node,
+// handling both regular InternalNode pointers and AttrNode results.
+func (context *ExecutionContext) nodeFromResult(nodePtr interface{}, refNode xml.Node) xml.Node {
+	switch n := nodePtr.(type) {
+	case *xml.InternalNode:
+		return xml.NewNode(n, refNode.MyDocument())
+	case *xpath.AttrNode:
+		inner := &xml.InternalNode{
+			Typ:     xml.XML_ATTRIBUTE_NODE,
+			Name:    n.Name_,
+			Content: n.Value_,
+			Valid:   true,
+		}
+		if n.Prefix_ != "" || n.NamespaceURI_ != "" {
+			inner.Ns = &xml.InternalNs{Prefix: n.Prefix_, Href: n.NamespaceURI_}
+		}
+		// Set the parent to the owning element so that LookupTemplate
+		// doesn't treat this attribute as a root element (which would
+		// cause infinite recursion via match="/").
+		if refNode != nil {
+			if parentInner, ok := refNode.NodePtr().(*xml.InternalNode); ok {
+				inner.Parent = parentInner
+			}
+		}
+		return xml.NewNode(inner, refNode.MyDocument())
+	}
+	return nil
 }
 
 func (context *ExecutionContext) EvalXPathAsBoolean(xmlNode xml.Node, data interface{}) (result bool) {
@@ -417,4 +471,105 @@ func (context *ExecutionContext) FetchInputDocument(loc string, relativeToSource
 	}
 	context.InputDocuments[resolvedLoc] = doc
 	return
+}
+
+// preprocessXPath substitutes $variable references, position(), and last()
+// with their literal values before XPath compilation, since antchfx/xpath
+// does not support dynamic variable or context injection.
+func (context *ExecutionContext) preprocessXPath(expr string) string {
+	if !strings.ContainsAny(expr, "$") && !strings.Contains(expr, "position()") && !strings.Contains(expr, "last()") {
+		return expr
+	}
+	result := expr
+
+	// Substitute position() and last()
+	pos, size := context.XPathContext.GetContextPosition()
+	result = strings.ReplaceAll(result, "position()", fmt.Sprintf("%d", pos))
+	result = strings.ReplaceAll(result, "last()", fmt.Sprintf("%d", size))
+
+	// Substitute $variable references
+	if strings.Contains(result, "$") {
+		result = context.substituteVariables(result)
+	}
+
+	return result
+}
+
+// substituteVariables replaces $name references with literal values.
+func (context *ExecutionContext) substituteVariables(expr string) string {
+	var buf strings.Builder
+	i := 0
+	for i < len(expr) {
+		if expr[i] == '$' && i+1 < len(expr) && isNameStartChar(rune(expr[i+1])) {
+			// Found $name — extract the variable name
+			start := i + 1
+			j := start
+			for j < len(expr) && isNameChar(rune(expr[j])) {
+				j++
+			}
+			name := expr[start:j]
+			// Look up the variable
+			val := context.FindVariable(name, "")
+			if val != nil {
+				buf.WriteString(valueToXPathLiteral(val.Value))
+			} else {
+				// Unknown variable, leave as-is (will fail at compile time)
+				buf.WriteString(expr[i:j])
+			}
+			i = j
+		} else {
+			buf.WriteByte(expr[i])
+			i++
+		}
+	}
+	return buf.String()
+}
+
+// valueToXPathLiteral converts a Go value to an XPath literal string.
+func valueToXPathLiteral(v interface{}) string {
+	switch val := v.(type) {
+	case string:
+		return fmt.Sprintf("'%s'", strings.ReplaceAll(val, "'", "''"))
+	case float64:
+		return fmt.Sprintf("%v", val)
+	case int:
+		return fmt.Sprintf("%d", val)
+	case bool:
+		if val {
+			return "true()"
+		}
+		return "false()"
+	case nil:
+		return "''"
+	default:
+		return fmt.Sprintf("'%v'", val)
+	}
+}
+
+// isNameStartChar returns true if r is a valid XML NameStartChar.
+func isNameStartChar(r rune) bool {
+	return r == '_' ||
+		r >= 'A' && r <= 'Z' ||
+		r >= 'a' && r <= 'z' ||
+		r >= 0xC0 && r <= 0xD6 ||
+		r >= 0xD8 && r <= 0xF6 ||
+		r >= 0xF8 && r <= 0x2FF ||
+		r >= 0x370 && r <= 0x37D ||
+		r >= 0x37F && r <= 0x1FFF ||
+		r >= 0x200C && r <= 0x200D ||
+		r >= 0x2070 && r <= 0x218F ||
+		r >= 0x2C00 && r <= 0x2FEF ||
+		r >= 0x3001 && r <= 0xD7FF ||
+		r >= 0xF900 && r <= 0xFDCF ||
+		r >= 0xFDF0 && r <= 0xFFFD ||
+		r >= 0x10000 && r <= 0xEFFFF
+}
+
+// isNameChar returns true if r is a valid XML NameChar.
+func isNameChar(r rune) bool {
+	return isNameStartChar(r) ||
+		r == '-' || r == '.' ||
+		r >= '0' && r <= '9' ||
+		r == 0xB7 || r >= 0x300 && r <= 0x36F ||
+		r >= 0x203F && r <= 0x2040
 }
