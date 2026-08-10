@@ -345,6 +345,15 @@ func (style *Stylesheet) parseChildren(root xml.Node, fileuri string) (err error
 			style.DecimalFormats[df.Name] = df
 			continue
 		}
+
+		// EXSLT func:function (user-defined extension functions)
+		if cur.Namespace() == "http://exslt.org/functions" && cur.Name() == "function" {
+			err := style.ParseUserFunction(cur)
+			if err != nil {
+				fmt.Println("func:function error:", err)
+			}
+			continue
+		}
 	}
 	return
 }

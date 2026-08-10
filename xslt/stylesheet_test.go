@@ -82,6 +82,7 @@ func TestXsltREC(t *testing.T) {
 			}
 		}
 	}
+	runGeneralXslTest(t, "date_add")
 	fmt.Println("passed", len(passed), "tests")
 }
 
@@ -268,7 +269,7 @@ func TestXsltGeneral(t *testing.T) {
 	//runGeneralXslTest(t, "bug-134") // xsl:key match "node()[self::sect]" should be same as match "sect" but is not; context issue??
 	//runGeneralXslTest(t, "bug-135") // same as 134
 	runGeneralXslTest(t, "bug-136")
-	//runGeneralXslTest(t, "bug-137") // EXSLT func
+	runGeneralXslTest(t, "bug-137") // EXSLT func
 	runGeneralXslTest(t, "bug-138")
 	//runGeneralXslTest(t, "bug-139") //extra output of entity definitions (why?)
 	runGeneralXslTest(t, "bug-140") // failed due to standalone
@@ -304,15 +305,16 @@ func TestXsltGeneral(t *testing.T) {
 	runGeneralXslTest(t, "bug-171")
 	runGeneralXslTest(t, "bug-172") //seems to be bug in xsl:choose (matches when test but no output)
 	//runGeneralXslTest(t, "bug-173") //extra newline on output?
-	//runGeneralXslTest(t, "bug-174") //exslt:func
+	runGeneralXslTest(t, "bug-174") //exslt:func
 	//runGeneralXslTest(t, "bug-175") //wrong output encoding/doctype for html output
 	runGeneralXslTest(t, "bug-176")
 	runGeneralXslTest(t, "bug-177") //should not create namespace declaration for built-in xml namespace
-	//runGeneralXslTest(t, "bug-178") //exslt:func
+	runGeneralXslTest(t, "bug-178") //exslt:func
 	//runGeneralXslTest(t, "bug-179") // xsl:element/@namespace don't need to explicitly create namespace already in scope
 	//runGeneralXslTest(t, "bug-180") //expects no output
 	//runGeneralXslTest(t, "bug-181") //this appears to be template priority bug
 	//runGeneralXslTest(t, "bug-182") //text()[2] should match something
+	runGeneralXslTest(t, "date_add")
 	fmt.Println("passed", genRun, "tests")
 }
 

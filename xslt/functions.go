@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,10 +28,57 @@ func (style *Stylesheet) RegisterXsltFunctions() {
 
 	style.Functions["{http://xmlsoft.org/XSLT/namespace}node-set"] = EXSLTnodeset
 	style.Functions["{http://exslt.org/common}node-set"] = EXSLTnodeset
+	style.Functions["{http://exslt.org/common}object-type"] = EXSLTobjectType
 	style.Functions["{http://exslt.org/math}constant"] = EXSLTmathconstant
 	style.Functions["{http://exslt.org/math}sin"] = EXSLTmathsin
 	style.Functions["{http://exslt.org/math}cos"] = EXSLTmathcos
 	style.Functions["{http://exslt.org/math}abs"] = EXSLTmathabs
+	style.Functions["{http://exslt.org/math}min"] = EXSLTmathmin
+	style.Functions["{http://exslt.org/math}max"] = EXSLTmathmax
+	style.Functions["{http://exslt.org/math}sqrt"] = EXSLTmathsqrt
+	style.Functions["{http://exslt.org/math}power"] = EXSLTmathpower
+	style.Functions["{http://exslt.org/math}tan"] = EXSLTmathtan
+	style.Functions["{http://exslt.org/math}asin"] = EXSLTmathasin
+	style.Functions["{http://exslt.org/math}acos"] = EXSLTmathacos
+	style.Functions["{http://exslt.org/math}atan"] = EXSLTmathatan
+	style.Functions["{http://exslt.org/math}atan2"] = EXSLTmathatan2
+	style.Functions["{http://exslt.org/math}exp"] = EXSLTmathexp
+	style.Functions["{http://exslt.org/math}log"] = EXSLTmathlog
+	style.Functions["{http://exslt.org/math}random"] = EXSLTmathrandom
+	style.Functions["{http://exslt.org/math}highest"] = EXSLTmathhighest
+	style.Functions["{http://exslt.org/math}lowest"] = EXSLTmathlowest
+	style.Functions["{http://exslt.org/sets}difference"] = EXSLTsetDifference
+	style.Functions["{http://exslt.org/sets}intersection"] = EXSLTsetIntersection
+	style.Functions["{http://exslt.org/sets}distinct"] = EXSLTsetDistinct
+	style.Functions["{http://exslt.org/sets}has-same-node"] = EXSLTsetHasSameNode
+	style.Functions["{http://exslt.org/sets}leading"] = EXSLTsetLeading
+	style.Functions["{http://exslt.org/sets}trailing"] = EXSLTsetTrailing
+	style.Functions["{http://exslt.org/strings}concat"] = EXSLTstrConcat
+	style.Functions["{http://exslt.org/strings}split"] = EXSLTstrSplit
+	style.Functions["{http://exslt.org/strings}tokenize"] = EXSLTstrSplit
+	style.Functions["{http://exslt.org/strings}replace"] = EXSLTstrReplace
+	style.Functions["{http://exslt.org/strings}padding"] = EXSLTstrPadding
+	style.Functions["{http://exslt.org/strings}align"] = EXSLTstrAlign
+	style.Functions["{http://exslt.org/dynamic}evaluate"] = EXSLTdynEvaluate
+	style.Functions["{http://exslt.org/random}random-sequence"] = EXSLTrndRandomSequence
+	style.Functions["{http://exslt.org/dates-and-times}date-time"] = EXSLTdateDateTime
+	style.Functions["{http://exslt.org/dates-and-times}date"] = EXSLTdateDate
+	style.Functions["{http://exslt.org/dates-and-times}time"] = EXSLTdateTime
+	style.Functions["{http://exslt.org/dates-and-times}year"] = EXSLTdateYear
+	style.Functions["{http://exslt.org/dates-and-times}month-in-year"] = EXSLTdateMonthInYear
+	style.Functions["{http://exslt.org/dates-and-times}day-in-month"] = EXSLTdateDayInMonth
+	style.Functions["{http://exslt.org/dates-and-times}day-in-year"] = EXSLTdateDayInYear
+	style.Functions["{http://exslt.org/dates-and-times}hour-in-day"] = EXSLTdateHourInDay
+	style.Functions["{http://exslt.org/dates-and-times}minute-in-hour"] = EXSLTdateMinuteInHour
+	style.Functions["{http://exslt.org/dates-and-times}second-in-minute"] = EXSLTdateSecondInMinute
+	style.Functions["{http://exslt.org/dates-and-times}week-in-year"] = EXSLTdateWeekInYear
+	style.Functions["{http://exslt.org/dates-and-times}day-in-week"] = EXSLTdateDayInWeek
+	style.Functions["{http://exslt.org/dates-and-times}add"] = EXSLTdateAdd
+	style.Functions["{http://exslt.org/dates-and-times}add-duration"] = EXSLTdateAddDuration
+	style.Functions["{http://exslt.org/dates-and-times}duration"] = EXSLTdateDuration
+	style.Functions["{http://exslt.org/dates-and-times}sum"] = EXSLTdateSum
+	style.Functions["{http://exslt.org/dates-and-times}seconds"] = EXSLTdateSeconds
+	style.Functions["{http://exslt.org/dates-and-times}difference"] = EXSLTdateDifference
 }
 
 type Key struct {
@@ -312,6 +360,608 @@ func EXSLTmathabs(context xpath.VariableScope, args []interface{}) interface{} {
 	}
 
 	return math.Abs(args[0].(float64))
+}
+
+// nodeSetToFloat64s extracts numeric values from a node-set.
+// Returns NaN for nodes that can't be parsed as numbers.
+func nodeSetToFloat64s(arg interface{}) []float64 {
+	switch v := arg.(type) {
+	case []unsafe.Pointer:
+		result := make([]float64, 0, len(v))
+		for _, ptr := range v {
+			n := xml.NewNode(ptr, nil)
+			f, err := strconv.ParseFloat(strings.TrimSpace(n.String()), 64)
+			if err != nil {
+				result = append(result, math.NaN())
+			} else {
+				result = append(result, f)
+			}
+		}
+		return result
+	case float64:
+		return []float64{v}
+	default:
+		return nil
+	}
+}
+
+func EXSLTmathmin(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return math.NaN()
+	}
+	values := nodeSetToFloat64s(args[0])
+	if len(values) == 0 {
+		return math.NaN()
+	}
+	min := values[0]
+	for _, v := range values[1:] {
+		if !math.IsNaN(v) && (math.IsNaN(min) || v < min) {
+			min = v
+		}
+	}
+	return min
+}
+
+func EXSLTmathmax(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return math.NaN()
+	}
+	values := nodeSetToFloat64s(args[0])
+	if len(values) == 0 {
+		return math.NaN()
+	}
+	max := values[0]
+	for _, v := range values[1:] {
+		if !math.IsNaN(v) && (math.IsNaN(max) || v > max) {
+			max = v
+		}
+	}
+	return max
+}
+
+func EXSLTmathsqrt(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return math.NaN()
+	}
+	return math.Sqrt(args[0].(float64))
+}
+
+func EXSLTmathpower(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return math.NaN()
+	}
+	return math.Pow(args[0].(float64), args[1].(float64))
+}
+
+func EXSLTmathtan(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return nil
+	}
+	return math.Tan(args[0].(float64))
+}
+
+func EXSLTmathasin(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return nil
+	}
+	val := args[0].(float64)
+	if val < -1 {
+		val = -1
+	}
+	if val > 1 {
+		val = 1
+	}
+	return math.Asin(val)
+}
+
+func EXSLTmathacos(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return nil
+	}
+	val := args[0].(float64)
+	if val < -1 {
+		val = -1
+	}
+	if val > 1 {
+		val = 1
+	}
+	return math.Acos(val)
+}
+
+func EXSLTmathatan(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return nil
+	}
+	return math.Atan(args[0].(float64))
+}
+
+func EXSLTmathatan2(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return nil
+	}
+	return math.Atan2(args[0].(float64), args[1].(float64))
+}
+
+func EXSLTmathexp(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return nil
+	}
+	return math.Exp(args[0].(float64))
+}
+
+func EXSLTmathlog(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return nil
+	}
+	val := args[0].(float64)
+	if val <= 0 {
+		return math.NaN()
+	}
+	return math.Log(val)
+}
+
+var mathRandomSource *rand.Rand
+
+func EXSLTmathrandom(context xpath.VariableScope, args []interface{}) interface{} {
+	switch len(args) {
+	case 0:
+		if mathRandomSource == nil {
+			mathRandomSource = rand.New(rand.NewPCG(0, 0))
+		}
+		return mathRandomSource.Float64()
+	case 1:
+		switch v := args[0].(type) {
+		case bool:
+			if v {
+				// Reseed with current time
+				mathRandomSource = rand.New(rand.NewPCG(uint64(rand.Uint64()), uint64(rand.Uint64())))
+				return mathRandomSource.Float64()
+			}
+			return mathRandomSource.Float64()
+		case float64:
+			seed := uint64(v)
+			mathRandomSource = rand.New(rand.NewPCG(seed, seed+1))
+			return mathRandomSource.Float64()
+		default:
+			return nil
+		}
+	default:
+		return nil
+	}
+}
+
+func EXSLTmathhighest(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return nil
+	}
+	nodes, ok := args[0].([]unsafe.Pointer)
+	if !ok || len(nodes) == 0 {
+		return nil
+	}
+	values := nodeSetToFloat64s(args[0])
+	if len(values) == 0 {
+		return nil
+	}
+	// Find the max value
+	max := values[0]
+	for _, v := range values[1:] {
+		if !math.IsNaN(v) && (math.IsNaN(max) || v > max) {
+			max = v
+		}
+	}
+	// Collect all nodes with that value
+	var result []unsafe.Pointer
+	for i, v := range values {
+		if v == max {
+			result = append(result, nodes[i])
+		}
+	}
+	return result
+}
+
+func EXSLTmathlowest(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return nil
+	}
+	nodes, ok := args[0].([]unsafe.Pointer)
+	if !ok || len(nodes) == 0 {
+		return nil
+	}
+	values := nodeSetToFloat64s(args[0])
+	if len(values) == 0 {
+		return nil
+	}
+	// Find the min value
+	min := values[0]
+	for _, v := range values[1:] {
+		if !math.IsNaN(v) && (math.IsNaN(min) || v < min) {
+			min = v
+		}
+	}
+	// Collect all nodes with that value
+	var result []unsafe.Pointer
+	for i, v := range values {
+		if v == min {
+			result = append(result, nodes[i])
+		}
+	}
+	return result
+}
+
+// ---------- EXSLT Common ----------
+
+func EXSLTobjectType(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return "string"
+	}
+	switch args[0].(type) {
+	case string:
+		return "string"
+	case float64:
+		return "number"
+	case bool:
+		return "boolean"
+	case []unsafe.Pointer:
+		return "node-set"
+	default:
+		return "string"
+	}
+}
+
+// ---------- EXSLT Sets ----------
+
+// nodeSetFromPointers converts []unsafe.Pointer to a flat slice of nodesets
+// by extracting the root pointers.
+func nodeSetFromPointers(arg interface{}) ([]unsafe.Pointer, bool) {
+	switch v := arg.(type) {
+	case []unsafe.Pointer:
+		return v, true
+	}
+	return nil, false
+}
+
+// inNodeSet checks if a pointer exists in a node-set by identity.
+func inNodeSet(set []unsafe.Pointer, ptr unsafe.Pointer) bool {
+	for _, p := range set {
+		if p == ptr {
+			return true
+		}
+	}
+	return false
+}
+
+func EXSLTsetDifference(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return nil
+	}
+	n1, ok1 := nodeSetFromPointers(args[0])
+	n2, ok2 := nodeSetFromPointers(args[1])
+	if !ok1 || !ok2 {
+		return nil
+	}
+	var result []unsafe.Pointer
+	for _, p := range n1 {
+		if !inNodeSet(n2, p) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func EXSLTsetIntersection(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return nil
+	}
+	n1, ok1 := nodeSetFromPointers(args[0])
+	n2, ok2 := nodeSetFromPointers(args[1])
+	if !ok1 || !ok2 {
+		return nil
+	}
+	var result []unsafe.Pointer
+	for _, p := range n1 {
+		if inNodeSet(n2, p) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func EXSLTsetDistinct(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 1 {
+		return nil
+	}
+	nodes, ok := nodeSetFromPointers(args[0])
+	if !ok {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var result []unsafe.Pointer
+	for _, p := range nodes {
+		n := xml.NewNode(p, nil)
+		val := strings.TrimSpace(n.String())
+		if !seen[val] {
+			seen[val] = true
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func EXSLTsetHasSameNode(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return false
+	}
+	n1, ok1 := nodeSetFromPointers(args[0])
+	n2, ok2 := nodeSetFromPointers(args[1])
+	if !ok1 || !ok2 {
+		return false
+	}
+	for _, p1 := range n1 {
+		if inNodeSet(n2, p1) {
+			return true
+		}
+	}
+	return false
+}
+
+func EXSLTsetLeading(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return nil
+	}
+	n1, ok1 := nodeSetFromPointers(args[0])
+	n2, ok2 := nodeSetFromPointers(args[1])
+	if !ok1 || !ok2 || len(n2) == 0 {
+		return nil
+	}
+
+	// Find the first node from n2 in document order.
+	// In libxml2, node pointers are in document order for nodes in the same doc,
+	// so the smallest pointer comes first.
+	firstPtr := n2[0]
+	for _, p := range n2[1:] {
+		if uintptr(p) < uintptr(firstPtr) {
+			firstPtr = p
+		}
+	}
+
+	// Return nodes from n1 that come before firstPtr in document order.
+	var result []unsafe.Pointer
+	for _, p := range n1 {
+		if uintptr(p) < uintptr(firstPtr) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+func EXSLTsetTrailing(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return nil
+	}
+	n1, ok1 := nodeSetFromPointers(args[0])
+	n2, ok2 := nodeSetFromPointers(args[1])
+	if !ok1 || !ok2 || len(n2) == 0 {
+		return nil
+	}
+
+	// Find the first node from n2 in document order.
+	firstPtr := n2[0]
+	for _, p := range n2[1:] {
+		if uintptr(p) < uintptr(firstPtr) {
+			firstPtr = p
+		}
+	}
+
+	// Return nodes from n1 that come after firstPtr in document order.
+	var result []unsafe.Pointer
+	for _, p := range n1 {
+		if uintptr(p) > uintptr(firstPtr) {
+			result = append(result, p)
+		}
+	}
+	return result
+}
+
+// ---------- EXSLT Strings ----------
+
+const strNamespace = "http://exslt.org/strings"
+
+func EXSLTstrConcat(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return ""
+	}
+	nodes, ok := nodeSetFromPointers(args[0])
+	if !ok {
+		return ""
+	}
+	var sep string
+	if len(args) >= 2 {
+		sep = argValToString(args[1])
+	}
+	var parts []string
+	for _, p := range nodes {
+		n := xml.NewNode(p, nil)
+		parts = append(parts, n.String())
+	}
+	return strings.Join(parts, sep)
+}
+
+func EXSLTstrSplit(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return nil
+	}
+	c := context.(*ExecutionContext)
+	val := argValToString(args[0])
+
+	var tokens []string
+	if len(args) >= 2 {
+		pattern := argValToString(args[1])
+		if pattern != "" {
+			tokens = strings.Split(val, pattern)
+		} else {
+			tokens = strings.Fields(val)
+		}
+	} else {
+		tokens = strings.Fields(val)
+	}
+
+	// Build a result tree fragment with <token> elements.
+	fauxroot := c.Output.CreateElementNode("token-wrapper")
+	for _, tok := range tokens {
+		tokenElem := c.Output.CreateElementNode("token")
+		tokenElem.SetNamespace(strNamespace, "")
+		tokenText := c.Output.CreateTextNode(tok)
+		tokenElem.AddChild(tokenText)
+		fauxroot.AddChild(tokenElem)
+	}
+	nodeset := xml.Nodeset{fauxroot}
+	return nodeset.ToPointers()
+}
+
+func EXSLTstrReplace(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 3 {
+		return ""
+	}
+	str := argValToString(args[0])
+	search := argValToString(args[1])
+	replace := argValToString(args[2])
+	return strings.ReplaceAll(str, search, replace)
+}
+
+func EXSLTstrPadding(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return ""
+	}
+	length := int(args[0].(float64))
+	if length <= 0 {
+		return ""
+	}
+	char := " "
+	if len(args) >= 2 {
+		s := argValToString(args[1])
+		if len(s) > 0 {
+			char = string(s[0])
+		}
+	}
+	if len(char) == 0 {
+		char = " "
+	}
+	return strings.Repeat(char, length)
+}
+
+func EXSLTstrAlign(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 2 {
+		return ""
+	}
+	target := argValToString(args[0])
+	align := argValToString(args[1])
+
+	// Determine padding character
+	padChar := " "
+	if len(args) >= 3 {
+		s := argValToString(args[2])
+		if len(s) > 0 {
+			padChar = string(s[0])
+		}
+	}
+	if padChar == "" {
+		padChar = " "
+	}
+
+	// The second argument is a template string whose length determines the field width.
+	width := len(align)
+
+	if len(target) >= width {
+		return target[:width]
+	}
+
+	switch {
+	case strings.HasPrefix(align, "left"):
+		return target + strings.Repeat(padChar, width-len(target))
+	case strings.HasPrefix(align, "right"):
+		return strings.Repeat(padChar, width-len(target)) + target
+	case strings.HasPrefix(align, "center"):
+		leftPad := (width - len(target)) / 2
+		rightPad := width - len(target) - leftPad
+		return strings.Repeat(padChar, leftPad) + target + strings.Repeat(padChar, rightPad)
+	default:
+		// align is a literal pad string: right-justify within it
+		return strings.Repeat(padChar, width-len(target)) + target
+	}
+}
+
+// ---------- EXSLT Dynamic ----------
+
+func EXSLTdynEvaluate(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) < 1 {
+		return nil
+	}
+	c := context.(*ExecutionContext)
+	xpathStr := argValToString(args[0])
+
+	evalNode := c.Current
+	if len(args) >= 2 {
+		switch v := args[1].(type) {
+		case []unsafe.Pointer:
+			if len(v) > 0 {
+				evalNode = xml.NewNode(v[0], nil)
+			}
+		}
+	}
+
+	result, err := c.EvalXPath(evalNode, xpathStr)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
+// ---------- EXSLT Random ----------
+
+func EXSLTrndRandomSequence(context xpath.VariableScope, args []interface{}) interface{} {
+	c := context.(*ExecutionContext)
+	var count int
+	var seed int64
+
+	switch len(args) {
+	case 0:
+		count = 1
+	case 1:
+		count = int(args[0].(float64))
+		if count < 1 {
+			count = 1
+		}
+	case 2:
+		seed = int64(args[0].(float64))
+		count = int(args[1].(float64))
+		if count < 1 {
+			count = 1
+		}
+	default:
+		return nil
+	}
+
+	var rng *rand.Rand
+	if len(args) >= 2 {
+		rng = rand.New(rand.NewPCG(uint64(seed), uint64(seed<<32)))
+	} else {
+		rng = rand.New(rand.NewPCG(uint64(rand.Uint64()), uint64(rand.Uint64())))
+	}
+
+	if count == 1 {
+		return rng.Float64()
+	}
+
+	fauxroot := c.Output.CreateElementNode("random-sequence-wrapper")
+	for i := 0; i < count; i++ {
+		elem := c.Output.CreateElementNode("random-sequence")
+		elem.SetNamespace("http://exslt.org/random", "")
+		txt := c.Output.CreateTextNode(fmt.Sprintf("%f", rng.Float64()))
+		elem.AddChild(txt)
+		fauxroot.AddChild(elem)
+	}
+	nodeset := xml.Nodeset{fauxroot}
+	return nodeset.ToPointers()
 }
 
 func XsltFormatNumber(context xpath.VariableScope, args []interface{}) interface{} {
