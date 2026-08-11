@@ -443,7 +443,51 @@ func (context *ExecutionContext) ResolveXPathFunction(prefix, name string, args 
 	for i, arg := range args {
 		normalized[i] = context.normalizeXPathArg(arg)
 	}
-	return fn(context, normalized), nil
+	result := fn(context, normalized)
+	// Normalize the return value too: convert XSLT function results
+	// (e.g. []unsafe.Pointer from nodeset functions) back to types
+	// that the XPath engine can iterate.
+	return context.normalizeXPathReturn(result), nil
+}
+
+// normalizeXPathReturn converts XSLT function return values (e.g.
+// []unsafe.Pointer, xml.Nodeset) into types that the XPath engine can
+// iterate via Select (NodeNavigator or []NodeNavigator).
+func (context *ExecutionContext) normalizeXPathReturn(result interface{}) interface{} {
+	switch v := result.(type) {
+	case []unsafe.Pointer:
+		var navs []antchfx.NodeNavigator
+		for _, p := range v {
+			inner := (*xml.InternalNode)(p)
+			navs = append(navs, xpath.NewNavigator(inner))
+		}
+		return navs
+	case xml.Nodeset:
+		var navs []antchfx.NodeNavigator
+		for _, n := range v {
+			navs = append(navs, xpath.NewNavigator(n.NodePtr().(xpath.NodeAdapter)))
+		}
+		return navs
+	case []xml.Node:
+		var navs []antchfx.NodeNavigator
+		for _, n := range v {
+			navs = append(navs, xpath.NewNavigator(n.NodePtr().(xpath.NodeAdapter)))
+		}
+		return navs
+	case []interface{}:
+		var navs []antchfx.NodeNavigator
+		for _, item := range v {
+			if inner, ok := item.(*xml.InternalNode); ok {
+				navs = append(navs, xpath.NewNavigator(inner))
+			} else if ptr, ok := item.(unsafe.Pointer); ok {
+				navs = append(navs, xpath.NewNavigator((*xml.InternalNode)(ptr)))
+			}
+		}
+		if len(navs) > 0 {
+			return navs
+		}
+	}
+	return result
 }
 
 // normalizeXPathArg converts antchfx-level evaluation results (NodeNavigator,
