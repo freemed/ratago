@@ -278,17 +278,16 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		sel := i.Node.Attr("select")
 		e := xpath.Compile(sel)
 		disableEscaping := i.Node.Attr("disable-output-escaping") == "yes"
-		var content string
+
+		// If standard compilation fails, try resolver-based compilation.
+		if e == nil {
+			e = xpath.CompileWithResolvers(sel, nil,
+				&xpathVarResolver{ctx: context},
+				&xpathFuncResolver{ctx: context})
+		}
 
 		context.RegisterXPathNamespaces(i.Node)
-		if e != nil {
-			content, _ = context.EvalXPathAsString(node, e)
-		} else {
-			// Standard compilation failed ($variables, extension fns).
-			// EvalXPath handles resolver-based compilation for strings.
-			val, _ := context.EvalXPath(node, sel)
-			content = fmt.Sprintf("%v", val)
-		}
+		content, _ := context.EvalXPathAsString(node, e)
 		//don't bother creating a text node for an empty string
 		if content != "" {
 			if context.UseCDataSection(context.OutputNode) {

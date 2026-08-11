@@ -138,7 +138,8 @@ func (context *ExecutionContext) EvalXPathAsNodeset(xmlNode xml.Node, data inter
 }
 
 // nodeFromResult converts an XPath result node pointer to an xml.Node,
-// handling both regular InternalNode pointers and AttrNode results.
+// handling regular InternalNode pointers, AttrNode results, and
+// generic NodeNavigator implementations (e.g. scalarNavigator).
 func (context *ExecutionContext) nodeFromResult(nodePtr interface{}, refNode xml.Node) xml.Node {
 	switch n := nodePtr.(type) {
 	case *xml.InternalNode:
@@ -153,9 +154,19 @@ func (context *ExecutionContext) nodeFromResult(nodePtr interface{}, refNode xml
 		if n.Prefix_ != "" || n.NamespaceURI_ != "" {
 			inner.Ns = &xml.InternalNs{Prefix: n.Prefix_, Href: n.NamespaceURI_}
 		}
-		// Set the parent to the owning element so that LookupTemplate
-		// doesn't treat this attribute as a root element (which would
-		// cause infinite recursion via match="/").
+		if refNode != nil {
+			if parentInner, ok := refNode.NodePtr().(*xml.InternalNode); ok {
+				inner.Parent = parentInner
+			}
+		}
+		return xml.NewNode(inner, refNode.MyDocument())
+	case antchfx.NodeNavigator:
+		// Generic navigator (e.g. scalarNavigator): create a text node
+		inner := &xml.InternalNode{
+			Typ:     xml.XML_TEXT_NODE,
+			Content: n.Value(),
+			Valid:   true,
+		}
 		if refNode != nil {
 			if parentInner, ok := refNode.NodePtr().(*xml.InternalNode); ok {
 				inner.Parent = parentInner

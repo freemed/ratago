@@ -284,33 +284,27 @@ func EXSLTnodeset(context xpath.VariableScope, args []interface{}) interface{} {
 	if len(args) < 1 {
 		return nil
 	}
-	c := context.(*ExecutionContext)
+	_ = context.(*ExecutionContext) // unused but kept for interface compatibility
 	nodes := args[0]
 	switch v := nodes.(type) {
 	case []interface{}:
 		if len(v) == 0 {
 			return nil
 		}
-		fauxroot := c.Output.CreateElementNode("VARIABLE")
+		// Return the nodes directly without wrapping in a fauxroot.
+		// Wrapping via AddChild mutates the input document tree and
+		// causes nodes to be relocated, breaking subsequent XPath queries.
+		var out xml.Nodeset
 		for _, node := range v {
 			n := xml.NewNode(node.(*xml.InternalNode), nil)
-			fauxroot.AddChild(n)
-		}
-		// Return children as the nodeset, not the fauxroot wrapper
-		var out xml.Nodeset
-		for cur := fauxroot.FirstChild(); cur != nil; cur = cur.NextSibling() {
-			out = append(out, cur)
+			out = append(out, n)
 		}
 		return out.ToPointers()
 	default:
 		// Handle antchfx NodeNavigator / InternalNode from function resolver
 		if in, ok := v.(*xml.InternalNode); ok {
-			fauxroot := c.Output.CreateElementNode("VARIABLE")
-			fauxroot.AddChild(xml.NewNode(in, nil))
 			var out xml.Nodeset
-			for cur := fauxroot.FirstChild(); cur != nil; cur = cur.NextSibling() {
-				out = append(out, cur)
-			}
+			out = append(out, xml.NewNode(in, nil))
 			return out.ToPointers()
 		}
 		out := fmt.Sprintf("%v", v)
