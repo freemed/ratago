@@ -280,41 +280,15 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		disableEscaping := i.Node.Attr("disable-output-escaping") == "yes"
 		var content string
 
-		// If compilation fails and the expression references $variables,
-		// try substituting known scalar values or look up the variable directly.
-		if e == nil && strings.Contains(sel, "$") {
-			// Try substituting scalar variables
-			substituted := context.substituteScalarVars(sel)
-			if !strings.Contains(substituted, "$") {
-				e = xpath.Compile(substituted)
-			}
-			// If still nil and expression is just "$varname", look up directly
-			if e == nil && strings.HasPrefix(sel, "$") && !strings.ContainsAny(sel[1:], " ([") {
-				v := context.FindVariable(sel[1:], "")
-				if v != nil && v.Value != nil {
-					switch val := v.Value.(type) {
-					case string:
-						content = val
-					case float64:
-						content = fmt.Sprintf("%v", val)
-					case int:
-						content = fmt.Sprintf("%d", val)
-					case xml.Nodeset:
-						if len(val) > 0 {
-							content = val[0].Content()
-						}
-					}
-					if content != "" {
-						goto writeValue
-					}
-				}
-			}
-		}
-
 		context.RegisterXPathNamespaces(i.Node)
-		content, _ = context.EvalXPathAsString(node, e)
-
-	writeValue:
+		if e != nil {
+			content, _ = context.EvalXPathAsString(node, e)
+		} else {
+			// Standard compilation failed ($variables, extension fns).
+			// EvalXPath handles resolver-based compilation for strings.
+			val, _ := context.EvalXPath(node, sel)
+			content = fmt.Sprintf("%v", val)
+		}
 		//don't bother creating a text node for an empty string
 		if content != "" {
 			if context.UseCDataSection(context.OutputNode) {

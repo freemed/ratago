@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"github.com/freemed/gokogiri/xml"
 	"github.com/freemed/gokogiri/xpath"
+	antchfx "github.com/freemed/xpath"
 	"path/filepath"
 	"strings"
+	"unsafe"
 )
 
 // ExecutionContext is passed to XSLT instructions during processing.
@@ -27,7 +29,18 @@ type ExecutionContext struct {
 func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (result interface{}, err error) {
 	switch data := data.(type) {
 	case string:
-		if xpathExpr := xpath.Compile(data); xpathExpr != nil {
+		// Try standard compilation first. If the expression contains
+		// $variable references or potential extension functions (namespaced
+		// calls like set:distinct), try compilation with resolvers.
+		var xpathExpr *xpath.Expression
+		if strings.Contains(data, "$") || strings.Contains(data, ":") {
+			vr, fr := context.xpathResolvers()
+			xpathExpr = xpath.CompileWithResolvers(data, nil, vr, fr)
+		}
+		if xpathExpr == nil {
+			xpathExpr = xpath.Compile(data)
+		}
+		if xpathExpr != nil {
 			defer xpathExpr.Free()
 			result, err = context.EvalXPath(xmlNode, xpathExpr)
 		} else {
@@ -96,10 +109,9 @@ func (context *ExecutionContext) LookupNamespace(prefix string, node xml.Node) (
 				}
 			}
 		}
-		return
 	}
 
-	//if no context node, simply check the stylesheet map
+	//if no context node, or prefix not found in node scope, check the stylesheet map
 	for href, pre := range context.Style.NamespaceMapping {
 		if pre == prefix {
 			return href
@@ -328,6 +340,163 @@ func (context *ExecutionContext) FindVariable(name, ns string) (ret *Variable) {
 	return nil
 }
 
+// ResolveXPathVariable implements antchfx.VariableResolver for the XPath engine.
+// It resolves $variable references in XPath expressions by looking up the
+// variable in local scope, then global scope. Returns the value in a form
+// compatible with antchfx/xpath: string, float64, bool, or NodeNavigator.
+func (context *ExecutionContext) ResolveXPathVariable(prefix, name string) (interface{}, error) {
+	ns := ""
+	if prefix != "" {
+		ns = context.LookupNamespace(prefix, context.Current)
+	}
+	v := context.FindVariable(name, ns)
+	if v == nil || v.Value == nil {
+		return "", fmt.Errorf("variable $%s not found", name)
+	}
+	switch val := v.Value.(type) {
+	case string:
+		return val, nil
+	case float64:
+		return val, nil
+	case int:
+		return float64(val), nil
+	case bool:
+		return val, nil
+	case xml.Nodeset:
+		if len(val) > 0 {
+			var navs []antchfx.NodeNavigator
+			for _, n := range val {
+				navs = append(navs, xpath.NewNavigator(n.NodePtr().(xpath.NodeAdapter)))
+			}
+			if len(navs) == 1 {
+				return navs[0], nil
+			}
+			return navs, nil
+		}
+		return "", nil
+	case []xml.Node:
+		if len(val) > 0 {
+			var navs []antchfx.NodeNavigator
+			for _, n := range val {
+				navs = append(navs, xpath.NewNavigator(n.NodePtr().(xpath.NodeAdapter)))
+			}
+			if len(navs) == 1 {
+				return navs[0], nil
+			}
+			return navs, nil
+		}
+		return "", nil
+	case []unsafe.Pointer:
+		if len(val) > 0 {
+			var navs []antchfx.NodeNavigator
+			for _, p := range val {
+				inner := (*xml.InternalNode)(p)
+				navs = append(navs, xpath.NewNavigator(inner))
+			}
+			if len(navs) == 1 {
+				return navs[0], nil
+			}
+			return navs, nil
+		}
+		return "", nil
+	case []interface{}:
+		if len(val) > 0 {
+			var navs []antchfx.NodeNavigator
+			for _, item := range val {
+				if inner, ok := item.(*xml.InternalNode); ok {
+					navs = append(navs, xpath.NewNavigator(inner))
+				} else if ptr, ok := item.(unsafe.Pointer); ok {
+					navs = append(navs, xpath.NewNavigator((*xml.InternalNode)(ptr)))
+				}
+			}
+			if len(navs) == 1 {
+				return navs[0], nil
+			}
+			if len(navs) > 0 {
+				return navs, nil
+			}
+		}
+		return "", nil
+	default:
+		return fmt.Sprintf("%v", val), nil
+	}
+}
+
+// ResolveXPathFunction implements antchfx.FunctionResolver for the XPath engine.
+// It resolves unknown function calls by looking up the function in the XSLT
+// function registry and calling it with the provided arguments.
+func (context *ExecutionContext) ResolveXPathFunction(prefix, name string, args []interface{}) (interface{}, error) {
+	ns := ""
+	if prefix != "" {
+		ns = context.LookupNamespace(prefix, context.Current)
+	}
+	if !context.IsFunctionRegistered(name, ns) {
+		return nil, fmt.Errorf("function %s not registered", name)
+	}
+	fn := context.ResolveFunction(name, ns)
+	if fn == nil {
+		return nil, fmt.Errorf("function %s resolver is nil", name)
+	}
+	// Normalize arguments: convert antchfx NodeNavigator types to
+	// gokogiri *xml.InternalNode which XSLT functions expect.
+	normalized := make([]interface{}, len(args))
+	for i, arg := range args {
+		normalized[i] = context.normalizeXPathArg(arg)
+	}
+	return fn(context, normalized), nil
+}
+
+// normalizeXPathArg converts antchfx-level evaluation results (NodeNavigator,
+// []NodeNavigator, string, float64, bool) into gokogiri types that XSLT
+// functions expect.
+func (context *ExecutionContext) normalizeXPathArg(arg interface{}) interface{} {
+	// Check if it's a slice of NodeNavigators from function resolver
+	type nodeAccessor interface {
+		Node() xpath.NodeAdapter
+	}
+	switch v := arg.(type) {
+	case []antchfx.NodeNavigator:
+		var result []interface{}
+		for _, nav := range v {
+			if na, ok := nav.(nodeAccessor); ok {
+				adapter := na.Node()
+				if inner, ok := adapter.(*xml.InternalNode); ok {
+					result = append(result, inner)
+				}
+			}
+		}
+		return result
+	}
+	// Single NodeNavigator
+	if na, ok := arg.(nodeAccessor); ok {
+		adapter := na.Node()
+		if inner, ok := adapter.(*xml.InternalNode); ok {
+			return inner
+		}
+		return adapter
+	}
+	return arg
+}
+
+// xpathVarResolver adapts ExecutionContext to antchfx.VariableResolver.
+type xpathVarResolver struct{ ctx *ExecutionContext }
+
+func (r *xpathVarResolver) ResolveVariable(prefix, name string) (interface{}, error) {
+	return r.ctx.ResolveXPathVariable(prefix, name)
+}
+
+// xpathFuncResolver adapts ExecutionContext to antchfx.FunctionResolver.
+type xpathFuncResolver struct{ ctx *ExecutionContext }
+
+func (r *xpathFuncResolver) ResolveFunction(prefix, name string, args []interface{}) (interface{}, error) {
+	return r.ctx.ResolveXPathFunction(prefix, name, args)
+}
+
+// xpathResolvers returns VariableResolver and FunctionResolver adapters.
+func (context *ExecutionContext) xpathResolvers() (antchfx.VariableResolver, antchfx.FunctionResolver) {
+	return &xpathVarResolver{ctx: context}, &xpathFuncResolver{ctx: context}
+}
+
 func (context *ExecutionContext) DeclareLocalVariable(name, ns string, v *Variable) error {
 	if context.Stack.Len() == 0 {
 		return errors.New("Attempting to declare a local variable without a stack frame")
@@ -446,66 +615,4 @@ func (context *ExecutionContext) FetchInputDocument(loc string, relativeToSource
 	}
 	context.InputDocuments[resolvedLoc] = doc
 	return
-}
-
-// substituteScalarVars replaces $variable references in an XPath expression
-// with their literal values, but ONLY for scalar-typed variables (string,
-// number, bool). Nodeset variables are left unchanged since they cannot be
-// expressed as XPath literals.
-func (context *ExecutionContext) substituteScalarVars(expr string) string {
-	var buf strings.Builder
-	i := 0
-	changed := false
-	for i < len(expr) {
-		if expr[i] == '$' && i+1 < len(expr) && isXPathNameStart(expr[i+1]) {
-			start := i + 1
-			j := start
-			for j < len(expr) && isXPathNameChar(expr[j]) {
-				j++
-			}
-			name := expr[start:j]
-			v := context.FindVariable(name, "")
-			if v != nil && v.Value != nil {
-				switch val := v.Value.(type) {
-				case string:
-					buf.WriteString(fmt.Sprintf("'%s'", strings.ReplaceAll(val, "'", "''")))
-					changed = true
-				case float64:
-					buf.WriteString(fmt.Sprintf("%v", val))
-					changed = true
-				case int:
-					buf.WriteString(fmt.Sprintf("%d", val))
-					changed = true
-				case bool:
-					if val {
-						buf.WriteString("true()")
-					} else {
-						buf.WriteString("false()")
-					}
-					changed = true
-				default:
-					// nodeset or unknown — leave unchanged
-					buf.WriteString(expr[i:j])
-				}
-			} else {
-				buf.WriteString(expr[i:j])
-			}
-			i = j
-		} else {
-			buf.WriteByte(expr[i])
-			i++
-		}
-	}
-	if !changed {
-		return expr
-	}
-	return buf.String()
-}
-
-func isXPathNameStart(c byte) bool {
-	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
-}
-
-func isXPathNameChar(c byte) bool {
-	return isXPathNameStart(c) || c == '-' || c == '.' || (c >= '0' && c <= '9')
 }

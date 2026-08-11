@@ -296,9 +296,23 @@ func EXSLTnodeset(context xpath.VariableScope, args []interface{}) interface{} {
 			n := xml.NewNode(node.(*xml.InternalNode), nil)
 			fauxroot.AddChild(n)
 		}
-		out := xml.Nodeset{fauxroot}
+		// Return children as the nodeset, not the fauxroot wrapper
+		var out xml.Nodeset
+		for cur := fauxroot.FirstChild(); cur != nil; cur = cur.NextSibling() {
+			out = append(out, cur)
+		}
 		return out.ToPointers()
 	default:
+		// Handle antchfx NodeNavigator / InternalNode from function resolver
+		if in, ok := v.(*xml.InternalNode); ok {
+			fauxroot := c.Output.CreateElementNode("VARIABLE")
+			fauxroot.AddChild(xml.NewNode(in, nil))
+			var out xml.Nodeset
+			for cur := fauxroot.FirstChild(); cur != nil; cur = cur.NextSibling() {
+				out = append(out, cur)
+			}
+			return out.ToPointers()
+		}
 		out := fmt.Sprintf("%v", v)
 		fmt.Println("invalid argument to exslt:nodeset", out)
 	}
@@ -616,6 +630,12 @@ func nodeSetFromPointers(arg interface{}) ([]interface{}, bool) {
 	switch v := arg.(type) {
 	case []interface{}:
 		return v, true
+	case []unsafe.Pointer:
+		result := make([]interface{}, len(v))
+		for i, p := range v {
+			result[i] = p
+		}
+		return result, true
 	}
 	return nil, false
 }
@@ -677,8 +697,9 @@ func EXSLTsetDistinct(context xpath.VariableScope, args []interface{}) interface
 	seen := make(map[string]bool)
 	var result []interface{}
 	for _, p := range nodes {
-		n := xml.NewNode(p.(*xml.InternalNode), nil)
-		val := strings.TrimSpace(n.String())
+		inner := p.(*xml.InternalNode)
+		n := xml.NewNode(inner, nil)
+		val := strings.TrimSpace(n.Content())
 		if !seen[val] {
 			seen[val] = true
 			result = append(result, p)
@@ -969,7 +990,17 @@ func XsltFormatNumber(context xpath.VariableScope, args []interface{}) interface
 		return nil
 	}
 
-	number := args[0].(float64)
+	var number float64
+	switch v := args[0].(type) {
+	case float64:
+		number = v
+	case int:
+		number = float64(v)
+	case string:
+		number, _ = strconv.ParseFloat(v, 64)
+	default:
+		number, _ = strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
+	}
 	format := args[1].(string)
 
 	if len(format) <= 0 {
