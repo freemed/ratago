@@ -15,7 +15,7 @@ replace (
 require (
 	github.com/freemed/gokogiri/xml v0.0.0-20260810175053-c72f08123335
 	github.com/freemed/gokogiri/xpath v0.0.0-20260810175053-c72f08123335
-	github.com/freemed/xpath v1.3.11
+	github.com/freemed/xpath v1.3.12
 )
 
 require (

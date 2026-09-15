@@ -41,28 +41,39 @@ type DecimalFormat struct {
 
 // Stylesheet is an XSLT 1.0 processor.
 type Stylesheet struct {
-	Doc                *xml.XmlDocument
-	Parent             *Stylesheet //xsl:import
-	NamedTemplates     map[string]*Template
-	NamespaceMapping   map[string]string
-	NamespaceAlias     map[string]string
-	ElementMatches     map[string]*list.List //matches on element name
-	AttrMatches        map[string]*list.List //matches on attr name
-	NodeMatches        *list.List            //matches on node()
-	TextMatches        *list.List            //matches on text()
-	PIMatches          *list.List            //matches on processing-instruction()
-	CommentMatches     *list.List            //matches on comment()
-	IdKeyMatches       *list.List            //matches on id() or key()
-	Imports            *list.List
-	Variables          map[string]*Variable
-	Functions          map[string]xpath.XPathFunction
-	AttributeSets      map[string]CompiledStep
-	ExcludePrefixes    []string
-	ExtensionPrefixes  []string
-	StripSpace         []string
-	PreserveSpace      []string
-	CDataElements      []string
-	GlobalParameters   []string
+	Doc               *xml.XmlDocument
+	Parent            *Stylesheet //xsl:import
+	NamedTemplates    map[string]*Template
+	NamespaceMapping  map[string]string
+	NamespaceAlias    map[string]string
+	ElementMatches    map[string]*list.List //matches on element name
+	AttrMatches       map[string]*list.List //matches on attr name
+	NodeMatches       *list.List            //matches on node()
+	TextMatches       *list.List            //matches on text()
+	PIMatches         *list.List            //matches on processing-instruction()
+	CommentMatches    *list.List            //matches on comment()
+	IdKeyMatches      *list.List            //matches on id() or key()
+	Imports           *list.List
+	Variables         map[string]*Variable
+	Functions         map[string]xpath.XPathFunction
+	AttributeSets     map[string]CompiledStep
+	ExcludePrefixes   []string
+	ExtensionPrefixes []string
+	StripSpace        []string
+	PreserveSpace     []string
+	CDataElements     []string
+	GlobalParameters  []string
+	// GlobalVariableOrder holds the names of every global xsl:variable and
+	// xsl:param in declaration (document) order. Global variables are evaluated
+	// in dependency order with this slice as the tie-break, so the evaluation
+	// order — and therefore the output — does not depend on Go's randomised map
+	// iteration over Variables. See globals.go.
+	GlobalVariableOrder []string
+	// NamespaceOrder holds the namespace URIs declared on the stylesheet's
+	// literal result element in document order, so that the namespaces copied
+	// onto the output root are emitted deterministically (and in the order
+	// libxslt copies them) instead of in NamespaceMapping's map order.
+	NamespaceOrder     []string
 	includes           map[string]bool
 	Keys               map[string][]*Key // allow multiple keys with same name
 	DecimalFormats     map[string]*DecimalFormat
@@ -139,9 +150,13 @@ func ParseStylesheet(doc *xml.XmlDocument, fileuri string) (style *Stylesheet, e
 		return
 	}
 
-	// get all the namespace mappings
+	// get all the namespace mappings, remembering the document order of the
+	// declarations so that namespace copies onto the output root are stable.
 	for _, ns := range cur.DeclaredNamespaces() {
 		style.NamespaceMapping[ns.Uri] = ns.Prefix
+		if !stringSliceContains(style.NamespaceOrder, ns.Uri) {
+			style.NamespaceOrder = append(style.NamespaceOrder, ns.Uri)
+		}
 	}
 
 	//get xsl:version, should be 1.0 or 2.0
@@ -465,26 +480,16 @@ func (style *Stylesheet) Process(doc *xml.XmlDocument, options StylesheetOptions
 		}
 	}
 
-	// eval global params and variables in dependency order.
-	// antchfx/xpath does not support $variable references, so variables
-	// with select expressions referencing other variables must be
-	// evaluated after their dependencies. Use multiple passes: evaluate
-	// variables that succeed, skip those that fail, and retry.
-	for pass := 0; pass < 10; pass++ {
-		anyEvaluated := false
-		for _, val := range style.Variables {
-			if val.Value != nil {
-				continue // already evaluated
-			}
-			val.Apply(doc.Root(), context)
-			if val.Value != nil {
-				anyEvaluated = true
-			}
-		}
-		if !anyEvaluated {
-			break
-		}
-	}
+	// Evaluate the global variables and parameters. They are evaluated in
+	// dependency order (declaration order as the tie-break) — see globals.go.
+	// Iterating style.Variables directly, as this used to do, made the result
+	// depend on Go's randomised map iteration order: a global whose dependency
+	// had not been evaluated yet resolved its $reference to an empty value and
+	// that wrong value was then frozen, because the retry passes only re-ran
+	// variables whose Value was still nil (a numeric result such as
+	// count($nodes)+1 is never nil). That is what produced different bytes for
+	// the same stylesheet on consecutive runs.
+	style.evaluateGlobalVariables(doc.Root(), context)
 
 	// process nodes
 	style.processNode(start, context, nil)
@@ -729,6 +734,11 @@ func (style *Stylesheet) RegisterGlobalVariable(node xml.Node) {
 	name := node.Attr("name")
 	_var := CompileSingleNode(node).(*Variable)
 	_var.Compile(node)
+	if _, exists := style.Variables[name]; !exists {
+		// first declaration wins; keep the declaration order for the
+		// dependency-ordered global evaluation below.
+		style.GlobalVariableOrder = append(style.GlobalVariableOrder, name)
+	}
 	style.Variables[name] = _var
 }
 

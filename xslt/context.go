@@ -131,10 +131,8 @@ func (context *ExecutionContext) LookupNamespace(prefix string, node xml.Node) (
 	}
 
 	//if no context node, or prefix not found in node scope, check the stylesheet map
-	for href, pre := range context.Style.NamespaceMapping {
-		if pre == prefix {
-			return href
-		}
+	if uri, ok := context.Style.namespaceForPrefix(prefix); ok {
+		return uri
 	}
 	return
 }
@@ -321,11 +319,9 @@ func (context *ExecutionContext) ResolveQName(qname string) (ns, name string) {
 		}
 		return
 	}
-	parts := strings.Split(qname, ":")
-	for uri, prefix := range context.Style.NamespaceMapping {
-		if prefix == parts[0] {
-			return uri, parts[1]
-		}
+	parts := strings.SplitN(qname, ":", 2)
+	if uri, ok := context.Style.namespaceForPrefix(parts[0]); ok {
+		return uri, parts[1]
 	}
 	// also try resolving through in-scope namespaces
 	if context.Current != nil {
@@ -813,8 +809,11 @@ func (context *ExecutionContext) DeclareStylesheetNamespacesIfRoot(node xml.Node
 	if context.OutputNode.NodeType() != xml.XML_DOCUMENT_NODE {
 		return
 	}
-	//add all namespace declarations to r
-	for uri, prefix := range context.Style.NamespaceMapping {
+	//add all namespace declarations to r, in the order they were declared on
+	//the stylesheet's literal result element (declaration order, not map order:
+	//the output bytes must not depend on Go's map iteration).
+	for _, uri := range context.Style.namespaceURIs() {
+		prefix := context.Style.NamespaceMapping[uri]
 		if uri != XSLT_NAMESPACE && uri != XML_NAMESPACE {
 			//these don't actually change if there is no alias
 			_, uri = ResolveAlias(context.Style, prefix, uri)

@@ -291,10 +291,8 @@ func resolveQNameForFunc(node xml.Node, qname string, style *Stylesheet) (ns, lo
 		}
 	}
 	// Fall back to stylesheet namespace mappings
-	for uri, pre := range style.NamespaceMapping {
-		if pre == prefix {
-			return uri, parts[1]
-		}
+	if uri, ok := style.namespaceForPrefix(prefix); ok {
+		return uri, parts[1]
 	}
 	return "", parts[1]
 }

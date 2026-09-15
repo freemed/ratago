@@ -125,9 +125,11 @@ func ResolveAlias(style *Stylesheet, alias, auri string) (prefix, uri string) {
 	if !ok {
 		return alias, auri
 	}
-	for uri, prefix = range style.NamespaceMapping {
-		if k == prefix {
-			return
+	// NamespaceMapping is a map: iterate it in declaration order (see
+	// namespaceURIs) so the alias resolves to the same URI on every run.
+	for _, u := range style.namespaceURIs() {
+		if k == style.NamespaceMapping[u] {
+			return k, u
 		}
 	}
 	return "", ""
