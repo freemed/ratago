@@ -18,7 +18,7 @@ require (
 
 require (
 	github.com/freemed/gokogiri/xpath v0.0.0-20260810213003-a5eae79f1d2e // indirect
-	github.com/freemed/xpath v1.3.9 // indirect
+	github.com/freemed/xpath v1.3.12 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )
