@@ -194,13 +194,17 @@ func TestNodeSetVariableResolution(t *testing.T) {
 // TestNodeSetVariableResolutionIndented runs the two headline cases with the
 // production option shape (IndentOutput + Parameters), which is how
 // REMITT calls the engine.
+//
+// The indentation matches xsltproc/libxslt: elements are broken onto their own
+// lines only when their children are elements, so a text-only element such as
+// <p>A</p> is written inline with no padding injected into its text.
 func TestNodeSetVariableResolutionIndented(t *testing.T) {
 	body := `<xsl:param name="jobId"/>` +
 		`<xsl:variable name="allp" select="//practice"/>` +
 		`<xsl:template match="/remitt"><out job="{$jobId}"><xsl:for-each select="$allp"><p><xsl:value-of select="name"/></p></xsl:for-each></out></xsl:template>`
 	want := "<out job=\"JOB42\">\n" +
-		"  <p>\n    A\n  </p>\n" +
-		"  <p>\n    B\n  </p>\n" +
+		"  <p>A</p>\n" +
+		"  <p>B</p>\n" +
 		"</out>"
 	got := transformVariables(t, body, map[string]any{"jobId": "JOB42"}, StylesheetOptions{IndentOutput: true})
 	if got != want {

@@ -26,17 +26,17 @@ func (e *terminationError) Error() string {
 
 // DecimalFormat stores xsl:decimal-format settings for format-number().
 type DecimalFormat struct {
-	Name               string
-	DecimalSeparator   string
-	GroupingSeparator  string
-	Infinity           string
-	MinusSign          string
-	NaN                string
-	Percent            string
-	PerMille           string
-	ZeroDigit          string
-	Digit              string
-	PatternSeparator   string
+	Name              string
+	DecimalSeparator  string
+	GroupingSeparator string
+	Infinity          string
+	MinusSign         string
+	NaN               string
+	Percent           string
+	PerMille          string
+	ZeroDigit         string
+	Digit             string
+	PatternSeparator  string
 }
 
 // Stylesheet is an XSLT 1.0 processor.
@@ -537,7 +537,11 @@ func (style *Stylesheet) constructOutput(output *xml.XmlDocument, options Styles
 		if !style.OmitXmlDeclaration {
 			decl = style.constructXmlDeclaration()
 		}
-		format := xml.XML_SAVE_NO_DECL | xml.XML_SAVE_AS_XML
+		// XML_SAVE_LIBXSLT selects gokogiri's libxml2/libxslt-compatible
+		// serializer: mixed-content-aware indentation, libxml2 escaping. The
+		// plain path is left untouched so gokogiri's own fixtures keep
+		// matching byte for byte.
+		format := xml.XML_SAVE_NO_DECL | xml.XML_SAVE_AS_XML | xml.XML_SAVE_LIBXSLT
 		if options.IndentOutput || style.IndentOutput {
 			format = format | xml.XML_SAVE_FORMAT
 		}
@@ -563,7 +567,11 @@ func (style *Stylesheet) constructOutput(output *xml.XmlDocument, options Styles
 		out = out + string(b[:size])
 	}
 	if outputType == "text" {
-		format := xml.XML_SAVE_NO_DECL
+		// The text output method writes character data verbatim: no markup,
+		// no indentation and no escaping (so an XSLT text output keeps raw
+		// CR/LF instead of turning them into &#13;). XML_SAVE_AS_TEXT and
+		// XML_SAVE_LIBXSLT both belong to the libxslt serializer.
+		format := xml.XML_SAVE_NO_DECL | xml.XML_SAVE_AS_TEXT | xml.XML_SAVE_LIBXSLT
 		for cur := output.Node.FirstChild(); cur != nil; cur = cur.NextSibling() {
 			b, size := cur.SerializeWithFormat(format, nil, nil)
 			if b != nil {
