@@ -95,7 +95,7 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 			return
 		}
 		context.RegisterXPathNamespaces(i.Node)
-		e := xpath.Compile(scope)
+		e := context.CompileSelect(scope)
 		// TODO: ensure we apply strip-space if required
 		nodes, err := context.EvalXPathAsNodeset(node, e)
 		if err != nil {
@@ -310,7 +310,7 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		}
 	case "when":
 	case "if":
-		e := xpath.Compile(i.Node.Attr("test"))
+		e := context.CompileSelect(i.Node.Attr("test"))
 		if context.EvalXPathAsBoolean(node, e) {
 			for _, c := range i.Children {
 				c.Apply(node, context)
@@ -343,7 +343,7 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		for _, c := range i.Children {
 			inst := c.(*XsltInstruction)
 			if inst.Node.Name() == "when" {
-				xp := xpath.Compile(inst.Node.Attr("test"))
+				xp := context.CompileSelect(inst.Node.Attr("test"))
 				if context.EvalXPathAsBoolean(node, xp) {
 					for _, wc := range inst.Children {
 						wc.Apply(node, context)
@@ -417,7 +417,7 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		}
 	case "for-each":
 		scope := i.Node.Attr("select")
-		e := xpath.Compile(scope)
+		e := context.CompileSelect(scope)
 		context.RegisterXPathNamespaces(i.Node)
 		nodes, _ := context.EvalXPathAsNodeset(node, e)
 		if i.sorting != nil {
@@ -441,7 +441,7 @@ func (i *XsltInstruction) Apply(node xml.Node, context *ExecutionContext) {
 		context.Current = old_curr
 	case "copy-of":
 		scope := i.Node.Attr("select")
-		e := xpath.Compile(scope)
+		e := context.CompileSelect(scope)
 		context.RegisterXPathNamespaces(i.Node)
 		nodes, _ := context.EvalXPathAsNodeset(node, e)
 		total := len(nodes)

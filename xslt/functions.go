@@ -10,6 +10,8 @@ import (
 	"strings"
 	"unsafe"
 
+	antchfx "github.com/freemed/xpath"
+
 	"github.com/freemed/gokogiri/xml"
 	"github.com/freemed/gokogiri/xpath"
 )
@@ -609,7 +611,7 @@ func EXSLTobjectType(context xpath.VariableScope, args []interface{}) interface{
 		return "number"
 	case bool:
 		return "boolean"
-	case []interface{}:
+	case []interface{}, []unsafe.Pointer, []xml.Node, xml.Nodeset, []antchfx.NodeNavigator:
 		return "node-set"
 	default:
 		return "string"
@@ -644,75 +646,408 @@ func inNodeSet(set []interface{}, ptr interface{}) bool {
 	return false
 }
 
-func EXSLTsetDifference(context xpath.VariableScope, args []interface{}) interface{} {
-	if len(args) != 2 {
+// setNodeHandle is the canonical representation of one node inside an EXSLT
+// set operation.
+//
+// node is always a gokogiri DOM node. owner is the owning element of an
+// attribute node: attribute values reach XSLT functions either as DOM
+// InternalNodes (which carry Parent) or as *xpath.AttrNode values built fresh
+// by the node navigator on every call (see gokogiri's
+// xpath.nodeNavigator.resultNode). Those copies have no link to their element
+// and a new pointer each time, so attribute nodes are compared by (owning
+// element, attribute name) instead of by pointer.
+type setNodeHandle struct {
+	node  *xml.InternalNode
+	owner *xml.InternalNode
+}
+
+// attrName returns the name of the attribute a handle denotes, or "" when the
+// handle is not an attribute node.
+func (h setNodeHandle) attrName() string {
+	if h.node == nil || h.node.Typ != xml.XML_ATTRIBUTE_NODE {
+		return ""
+	}
+	return h.node.Name
+}
+
+// equal reports whether two handles denote the same node.
+func (h setNodeHandle) equal(other setNodeHandle) bool {
+	if h.node == nil || other.node == nil {
+		return false
+	}
+	hn, on := h.attrName(), other.attrName()
+	if hn == "" && on == "" {
+		return h.node == other.node
+	}
+	if hn == "" || on == "" || hn != on {
+		return false
+	}
+	if nsKey(h.node.Ns) != nsKey(other.node.Ns) {
+		return false
+	}
+	if h.owner != nil && other.owner != nil {
+		return h.owner == other.owner
+	}
+	if h.owner == nil && other.owner == nil {
+		// Both attributes are detached copies with no link to their element
+		// (the XPath layer hands them over that way). Fall back to the value
+		// so that repeated evaluations of the same expression still compare
+		// equal; attributes of different elements are never claimed equal.
+		return h.node.Content == other.node.Content
+	}
+	return false
+}
+
+func nsKey(ns *xml.InternalNs) string {
+	if ns == nil {
+		return ""
+	}
+	return ns.Prefix + "|" + ns.Href
+}
+
+// setNodeStringValue returns the XPath string-value of a node: the text of all
+// descendants for element nodes, the value for attribute nodes, the content
+// for text/comment/PI nodes. This mirrors xmlXPathCastNodeToString(), which is
+// what libexslt uses to decide which nodes set:distinct() keeps.
+func setNodeStringValue(n *xml.InternalNode) string {
+	if n == nil {
+		return ""
+	}
+	return xml.NewNode(n, nil).Content()
+}
+
+// nodeAccessor is implemented by gokogiri's XPath node navigators; it exposes
+// the DOM node the navigator currently points at.
+type nodeAccessor interface {
+	Node() xpath.NodeAdapter
+}
+
+// exsltSetNodes converts any node-set argument shape into canonical handles.
+//
+// Arguments reach an XSLT function as []antchfx.NodeNavigator from the XPath
+// engine, while variables, EXSLT node-set results and the other functions in
+// this file produce []interface{} of *xml.InternalNode, []unsafe.Pointer,
+// xml.Nodeset or []xml.Node. All of those shapes are accepted.
+//
+// ok is false when the argument is not a node-set at all. EXSLT defines these
+// functions for node-sets only: libxslt raises a type error there, and here the
+// caller yields an empty node-set rather than panicking on a type assertion.
+func exsltSetNodes(arg interface{}) (nodes []setNodeHandle, ok bool) {
+	switch v := arg.(type) {
+	case nil:
+		return nil, false
+	case antchfx.NodeNavigator:
+		h, found := handleFromNavigator(v)
+		if !found {
+			return nil, false
+		}
+		return []setNodeHandle{h}, true
+	case []antchfx.NodeNavigator:
+		out := make([]setNodeHandle, 0, len(v))
+		for _, nav := range v {
+			if h, found := handleFromNavigator(nav); found {
+				out = append(out, h)
+			}
+		}
+		return out, true
+	case *xml.InternalNode:
+		if v == nil {
+			return nil, false
+		}
+		return []setNodeHandle{handleFromInternal(v, nil)}, true
+	case unsafe.Pointer:
+		if v == nil {
+			return nil, false
+		}
+		return []setNodeHandle{handleFromInternal((*xml.InternalNode)(v), nil)}, true
+	case []unsafe.Pointer:
+		out := make([]setNodeHandle, 0, len(v))
+		for _, p := range v {
+			if p == nil {
+				continue
+			}
+			out = append(out, handleFromInternal((*xml.InternalNode)(p), nil))
+		}
+		return out, true
+	case xml.Nodeset:
+		out := make([]setNodeHandle, 0, len(v))
+		for _, n := range v {
+			if h, found := handleFromNode(n); found {
+				out = append(out, h)
+			}
+		}
+		return out, true
+	case []xml.Node:
+		out := make([]setNodeHandle, 0, len(v))
+		for _, n := range v {
+			if h, found := handleFromNode(n); found {
+				out = append(out, h)
+			}
+		}
+		return out, true
+	case []interface{}:
+		out := make([]setNodeHandle, 0, len(v))
+		for _, item := range v {
+			if h, found := handleFromAny(item); found {
+				out = append(out, h)
+			}
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// handleFromAny converts one element of a []interface{} argument into a handle.
+func handleFromAny(item interface{}) (setNodeHandle, bool) {
+	switch v := item.(type) {
+	case nil:
+		return setNodeHandle{}, false
+	case *xml.InternalNode:
+		if v == nil {
+			return setNodeHandle{}, false
+		}
+		return handleFromInternal(v, nil), true
+	case unsafe.Pointer:
+		if v == nil {
+			return setNodeHandle{}, false
+		}
+		return handleFromInternal((*xml.InternalNode)(v), nil), true
+	case *xpath.AttrNode:
+		return handleFromAttrNode(v, nil)
+	case xml.Node:
+		return handleFromNode(v)
+	case antchfx.NodeNavigator:
+		return handleFromNavigator(v)
+	case xpath.NodeAdapter:
+		return handleFromAdapter(v, nil)
+	}
+	return setNodeHandle{}, false
+}
+
+// handleFromNode converts a gokogiri DOM node into a handle.
+func handleFromNode(n xml.Node) (setNodeHandle, bool) {
+	if n == nil {
+		return setNodeHandle{}, false
+	}
+	if inner, isInner := n.NodePtr().(*xml.InternalNode); isInner {
+		return handleFromInternal(inner, nil), true
+	}
+	if ad, isAdapter := n.NodePtr().(xpath.NodeAdapter); isAdapter {
+		return handleFromAdapter(ad, nil)
+	}
+	return setNodeHandle{}, false
+}
+
+// handleFromAdapter converts a gokogiri XPath node adapter into a handle.
+func handleFromAdapter(ad xpath.NodeAdapter, owner *xml.InternalNode) (setNodeHandle, bool) {
+	switch n := ad.(type) {
+	case *xml.InternalNode:
+		if n == nil {
+			return setNodeHandle{}, false
+		}
+		return handleFromInternal(n, owner), true
+	case *xpath.AttrNode:
+		return handleFromAttrNode(n, owner)
+	}
+	return setNodeHandle{}, false
+}
+
+// handleFromInternal converts a DOM node into a handle, picking up the owning
+// element for attribute nodes from the node itself.
+func handleFromInternal(n *xml.InternalNode, owner *xml.InternalNode) setNodeHandle {
+	if n == nil {
+		return setNodeHandle{}
+	}
+	if n.Typ == xml.XML_ATTRIBUTE_NODE && owner == nil {
+		owner = n.Parent
+	}
+	return setNodeHandle{node: n, owner: owner}
+}
+
+// handleFromAttrNode materialises a gokogiri XPath attribute result into a DOM
+// attribute node so that it can take part in set operations. attrNode values
+// are throw-away copies, so the owning element (when the caller could work it
+// out) is carried alongside.
+func handleFromAttrNode(a *xpath.AttrNode, owner *xml.InternalNode) (setNodeHandle, bool) {
+	if a == nil {
+		return setNodeHandle{}, false
+	}
+	return setNodeHandle{node: internalAttrNode(a, owner), owner: owner}, true
+}
+
+// internalAttrNode builds the DOM attribute node that stands in for an XPath
+// attribute result. The XPath layer hands attributes over as *xpath.AttrNode
+// copies that have no link back to their element, so the owning element is
+// attached as the parent: that is what gives the node its identity (two
+// attribute nodes are the same node when they have the same owner and name)
+// and what lets XSLT iterate the result.
+func internalAttrNode(a *xpath.AttrNode, owner *xml.InternalNode) *xml.InternalNode {
+	if a == nil {
 		return nil
 	}
-	n1, ok1 := nodeSetFromPointers(args[0])
-	n2, ok2 := nodeSetFromPointers(args[1])
-	if !ok1 || !ok2 {
+	inner := &xml.InternalNode{
+		Typ:     xml.XML_ATTRIBUTE_NODE,
+		Name:    a.Name_,
+		Content: a.Value_,
+		Valid:   true,
+	}
+	if a.Prefix_ != "" || a.NamespaceURI_ != "" {
+		inner.Ns = &xml.InternalNs{Prefix: a.Prefix_, Href: a.NamespaceURI_}
+	}
+	if owner != nil {
+		inner.Parent = owner
+	}
+	return inner
+}
+
+// handleFromNavigator converts an XPath node navigator into a handle.
+//
+// A navigator positioned on an attribute exposes a throw-away *xpath.AttrNode,
+// so the owning element is recovered by re-positioning a copy of the navigator
+// (gokogiri's Copy() drops the attribute position and leaves the navigator on
+// the owning element).
+func handleFromNavigator(nav antchfx.NodeNavigator) (setNodeHandle, bool) {
+	if nav == nil {
+		return setNodeHandle{}, false
+	}
+	acc, isAccessor := nav.(nodeAccessor)
+	if !isAccessor {
+		return setNodeHandle{}, false
+	}
+	return handleFromAdapter(acc.Node(), navigatorOwner(nav))
+}
+
+// navigatorOwner returns the element owning the attribute a navigator is
+// positioned on, or nil when that cannot be determined.
+func navigatorOwner(nav antchfx.NodeNavigator) *xml.InternalNode {
+	if nav.NodeType() != antchfx.AttributeNode {
 		return nil
 	}
-	var result []interface{}
-	for _, p := range n1 {
-		if !inNodeSet(n2, p) {
-			result = append(result, p)
+	copied := nav.Copy()
+	if copied == nil {
+		return nil
+	}
+	acc, ok := copied.(nodeAccessor)
+	if !ok {
+		return nil
+	}
+	switch n := acc.Node().(type) {
+	case *xml.InternalNode:
+		if n.Typ == xml.XML_ATTRIBUTE_NODE {
+			// The navigator wraps a materialised attribute node: its owner is
+			// the node's parent (often unset).
+			return n.Parent
+		}
+		return n
+	}
+	return nil
+}
+
+// exsltContains reports whether a node-set holds the given node.
+func exsltContains(nodes []setNodeHandle, h setNodeHandle) bool {
+	for _, n := range nodes {
+		if n.equal(h) {
+			return true
 		}
 	}
-	return result
+	return false
+}
+
+// exsltNodeSet converts handles back into the node-set representation the XPath
+// engine consumes for XSLT function results (a slice of gokogiri node
+// pointers). An empty result is still a node-set: returning nil would be
+// wrapped by the engine into a one-node scalar set.
+func exsltNodeSet(handles []setNodeHandle) []unsafe.Pointer {
+	out := make([]unsafe.Pointer, 0, len(handles))
+	for _, h := range handles {
+		if h.node != nil {
+			out = append(out, unsafe.Pointer(h.node))
+		}
+	}
+	return out
+}
+
+// exsltEmptyNodeSet is the result of a set function that cannot produce any
+// node (type error or empty result).
+func exsltEmptyNodeSet() []unsafe.Pointer {
+	return []unsafe.Pointer{}
+}
+
+func EXSLTsetDifference(context xpath.VariableScope, args []interface{}) interface{} {
+	if len(args) != 2 {
+		return exsltEmptyNodeSet()
+	}
+	n1, ok1 := exsltSetNodes(args[0])
+	n2, ok2 := exsltSetNodes(args[1])
+	if !ok1 || !ok2 {
+		return exsltEmptyNodeSet()
+	}
+	// Nodes in n1 that are not in n2, in the order they appear in n1
+	// (document order).
+	var result []setNodeHandle
+	for _, h := range n1 {
+		if !exsltContains(n2, h) {
+			result = append(result, h)
+		}
+	}
+	return exsltNodeSet(result)
 }
 
 func EXSLTsetIntersection(context xpath.VariableScope, args []interface{}) interface{} {
 	if len(args) != 2 {
-		return nil
+		return exsltEmptyNodeSet()
 	}
-	n1, ok1 := nodeSetFromPointers(args[0])
-	n2, ok2 := nodeSetFromPointers(args[1])
+	n1, ok1 := exsltSetNodes(args[0])
+	n2, ok2 := exsltSetNodes(args[1])
 	if !ok1 || !ok2 {
-		return nil
+		return exsltEmptyNodeSet()
 	}
-	var result []interface{}
-	for _, p := range n1 {
-		if inNodeSet(n2, p) {
-			result = append(result, p)
+	var result []setNodeHandle
+	for _, h := range n1 {
+		if exsltContains(n2, h) {
+			result = append(result, h)
 		}
 	}
-	return result
+	return exsltNodeSet(result)
 }
 
 func EXSLTsetDistinct(context xpath.VariableScope, args []interface{}) interface{} {
 	if len(args) != 1 {
-		return nil
+		return exsltEmptyNodeSet()
 	}
-	nodes, ok := nodeSetFromPointers(args[0])
+	nodes, ok := exsltSetNodes(args[0])
 	if !ok {
-		return nil
+		return exsltEmptyNodeSet()
 	}
-	seen := make(map[string]bool)
-	var result []interface{}
-	for _, p := range nodes {
-		inner := p.(*xml.InternalNode)
-		n := xml.NewNode(inner, nil)
-		val := strings.TrimSpace(n.Content())
-		if !seen[val] {
-			seen[val] = true
-			result = append(result, p)
+	// EXSLT: like libxslt (libexslt/sets.c -> xmlXPathDistinctSorted), keep the
+	// first node seen for each distinct string-value and drop the rest, so that
+	// repeated values (several procedures carrying the same diagnosis key, say)
+	// collapse to one node. The argument arrives in document order and survives
+	// in document order.
+	seen := make(map[string]bool, len(nodes))
+	var result []setNodeHandle
+	for _, h := range nodes {
+		v := setNodeStringValue(h.node)
+		if seen[v] {
+			continue
 		}
+		seen[v] = true
+		result = append(result, h)
 	}
-	return result
+	return exsltNodeSet(result)
 }
 
 func EXSLTsetHasSameNode(context xpath.VariableScope, args []interface{}) interface{} {
 	if len(args) != 2 {
 		return false
 	}
-	n1, ok1 := nodeSetFromPointers(args[0])
-	n2, ok2 := nodeSetFromPointers(args[1])
+	n1, ok1 := exsltSetNodes(args[0])
+	n2, ok2 := exsltSetNodes(args[1])
 	if !ok1 || !ok2 {
 		return false
 	}
-	for _, p1 := range n1 {
-		if inNodeSet(n2, p1) {
+	for _, h := range n1 {
+		if exsltContains(n2, h) {
 			return true
 		}
 	}
@@ -721,60 +1056,63 @@ func EXSLTsetHasSameNode(context xpath.VariableScope, args []interface{}) interf
 
 func EXSLTsetLeading(context xpath.VariableScope, args []interface{}) interface{} {
 	if len(args) != 2 {
-		return nil
+		return exsltEmptyNodeSet()
 	}
-	n1, ok1 := nodeSetFromPointers(args[0])
-	n2, ok2 := nodeSetFromPointers(args[1])
-	if !ok1 || !ok2 || len(n2) == 0 {
-		return nil
+	n1, ok1 := exsltSetNodes(args[0])
+	n2, ok2 := exsltSetNodes(args[1])
+	if !ok1 || !ok2 {
+		return exsltEmptyNodeSet()
 	}
-
-	// Find the first node from n2 in document order.
-	// In libxml2, node pointers are in document order for nodes in the same doc,
-	// so the smallest pointer comes first.
-	firstPtr := n2[0]
-	for _, p := range n2[1:] {
-		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) < uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
-			firstPtr = p
+	// EXSLT: an empty second node-set returns the first one unchanged.
+	if len(n2) == 0 {
+		return exsltNodeSet(n1)
+	}
+	// Otherwise the nodes of n1 that precede n2's first node in document
+	// order. Both node-sets are already in document order (libexslt relies on
+	// this too), so this is the prefix of n1 up to the node equal to n2[0];
+	// when n1 does not contain n2[0] the result is empty.
+	var result []setNodeHandle
+	for _, h := range n1 {
+		if h.equal(n2[0]) {
+			return exsltNodeSet(result)
 		}
+		result = append(result, h)
 	}
-
-	// Return nodes from n1 that come before firstPtr in document order.
-	var result []interface{}
-	for _, p := range n1 {
-		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) < uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
-			result = append(result, p)
-		}
-	}
-	return result
+	return exsltEmptyNodeSet()
 }
 
 func EXSLTsetTrailing(context xpath.VariableScope, args []interface{}) interface{} {
 	if len(args) != 2 {
-		return nil
+		return exsltEmptyNodeSet()
 	}
-	n1, ok1 := nodeSetFromPointers(args[0])
-	n2, ok2 := nodeSetFromPointers(args[1])
-	if !ok1 || !ok2 || len(n2) == 0 {
-		return nil
+	n1, ok1 := exsltSetNodes(args[0])
+	n2, ok2 := exsltSetNodes(args[1])
+	if !ok1 || !ok2 {
+		return exsltEmptyNodeSet()
 	}
-
-	// Find the first node from n2 in document order.
-	firstPtr := n2[0]
-	for _, p := range n2[1:] {
-		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) < uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
-			firstPtr = p
+	// EXSLT: an empty second node-set returns the first one unchanged.
+	if len(n2) == 0 {
+		return exsltNodeSet(n1)
+	}
+	// The nodes of n1 that follow n2's first node in document order; empty
+	// when n1 does not contain n2[0].
+	var (
+		result []setNodeHandle
+		found  bool
+	)
+	for _, h := range n1 {
+		if found {
+			result = append(result, h)
+			continue
+		}
+		if h.equal(n2[0]) {
+			found = true
 		}
 	}
-
-	// Return nodes from n1 that come after firstPtr in document order.
-	var result []interface{}
-	for _, p := range n1 {
-		if uintptr(unsafe.Pointer(p.(*xml.InternalNode))) > uintptr(unsafe.Pointer(firstPtr.(*xml.InternalNode))) {
-			result = append(result, p)
-		}
+	if !found {
+		return exsltEmptyNodeSet()
 	}
-	return result
+	return exsltNodeSet(result)
 }
 
 // ---------- EXSLT Strings ----------

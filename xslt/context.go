@@ -137,6 +137,25 @@ func (context *ExecutionContext) EvalXPathAsNodeset(xmlNode xml.Node, data inter
 	return
 }
 
+// CompileSelect compiles an XPath @select/@test expression into a form
+// suitable for EvalXPath / EvalXPathAsNodeset / EvalXPathAsString.
+//
+// xpath.Compile() runs without variable or function resolvers, so any
+// expression containing a $variable reference (or an unknown extension
+// function) fails to compile and returns nil. Instructions that held the
+// pre-compiled expression then evaluated a nil expression, which yields an
+// empty result — silently dropping the whole selection (this is what broke
+// `for-each select="$nodeset"`). When the plain compilation fails we hand
+// back the raw string instead: EvalXPath recompiles it with the XSLT
+// variable/function resolvers attached, so the variable is resolved at
+// evaluation time.
+func (context *ExecutionContext) CompileSelect(expr string) interface{} {
+	if e := xpath.Compile(expr); e != nil {
+		return e
+	}
+	return expr
+}
+
 // nodeFromResult converts an XPath result node pointer to an xml.Node,
 // handling regular InternalNode pointers, AttrNode results, and
 // generic NodeNavigator implementations (e.g. scalarNavigator).
@@ -351,10 +370,47 @@ func (context *ExecutionContext) FindVariable(name, ns string) (ret *Variable) {
 	return nil
 }
 
+// nodeSetNavigators converts an XSLT node-set (a slice of gokogiri nodes) into
+// the representation the XPath engine understands as a node-set: ALWAYS a
+// []antchfx.NodeNavigator, even for zero or one node.
+//
+// Two properties matter here:
+//   - An empty node-set must stay a node-set. Returning "" (a string) made the
+//     engine wrap it in a synthetic single-value navigator, so
+//     count($empty) == 1 and xsl:for-each iterated once instead of not at all.
+//   - A 1-node set and an N-node set must take the same code path, so they can
+//     only differ in size.
+func nodeSetNavigators(nodes []xml.Node) []antchfx.NodeNavigator {
+	navs := make([]antchfx.NodeNavigator, 0, len(nodes))
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		if adapter, ok := n.NodePtr().(xpath.NodeAdapter); ok {
+			navs = append(navs, xpath.NewNavigator(adapter))
+		}
+	}
+	return navs
+}
+
+// nodeSetNavigatorsFromPointers is nodeSetNavigators for raw gokogiri
+// InternalNode pointers (the shape EXSLT node-set functions return).
+func nodeSetNavigatorsFromPointers(ptrs []unsafe.Pointer) []antchfx.NodeNavigator {
+	navs := make([]antchfx.NodeNavigator, 0, len(ptrs))
+	for _, p := range ptrs {
+		if p == nil {
+			continue
+		}
+		navs = append(navs, xpath.NewNavigator((*xml.InternalNode)(p)))
+	}
+	return navs
+}
+
 // ResolveXPathVariable implements antchfx.VariableResolver for the XPath engine.
 // It resolves $variable references in XPath expressions by looking up the
 // variable in local scope, then global scope. Returns the value in a form
-// compatible with antchfx/xpath: string, float64, bool, or NodeNavigator.
+// compatible with antchfx/xpath: string, float64, bool, or a node-set
+// ([]antchfx.NodeNavigator).
 func (context *ExecutionContext) ResolveXPathVariable(prefix, name string) (interface{}, error) {
 	ns := ""
 	if prefix != "" {
@@ -374,60 +430,22 @@ func (context *ExecutionContext) ResolveXPathVariable(prefix, name string) (inte
 	case bool:
 		return val, nil
 	case xml.Nodeset:
-		if len(val) > 0 {
-			var navs []antchfx.NodeNavigator
-			for _, n := range val {
-				navs = append(navs, xpath.NewNavigator(n.NodePtr().(xpath.NodeAdapter)))
-			}
-			if len(navs) == 1 {
-				return navs[0], nil
-			}
-			return navs, nil
-		}
-		return "", nil
+		return nodeSetNavigators(val), nil
 	case []xml.Node:
-		if len(val) > 0 {
-			var navs []antchfx.NodeNavigator
-			for _, n := range val {
-				navs = append(navs, xpath.NewNavigator(n.NodePtr().(xpath.NodeAdapter)))
-			}
-			if len(navs) == 1 {
-				return navs[0], nil
-			}
-			return navs, nil
-		}
-		return "", nil
+		return nodeSetNavigators(val), nil
 	case []unsafe.Pointer:
-		if len(val) > 0 {
-			var navs []antchfx.NodeNavigator
-			for _, p := range val {
-				inner := (*xml.InternalNode)(p)
-				navs = append(navs, xpath.NewNavigator(inner))
-			}
-			if len(navs) == 1 {
-				return navs[0], nil
-			}
-			return navs, nil
-		}
-		return "", nil
+		return nodeSetNavigatorsFromPointers(val), nil
 	case []interface{}:
-		if len(val) > 0 {
-			var navs []antchfx.NodeNavigator
-			for _, item := range val {
-				if inner, ok := item.(*xml.InternalNode); ok {
-					navs = append(navs, xpath.NewNavigator(inner))
-				} else if ptr, ok := item.(unsafe.Pointer); ok {
-					navs = append(navs, xpath.NewNavigator((*xml.InternalNode)(ptr)))
-				}
-			}
-			if len(navs) == 1 {
-				return navs[0], nil
-			}
-			if len(navs) > 0 {
-				return navs, nil
+		var nodes []xml.Node
+		for _, item := range val {
+			switch i := item.(type) {
+			case *xml.InternalNode:
+				nodes = append(nodes, xml.NewNode(i, nil))
+			case unsafe.Pointer:
+				nodes = append(nodes, xml.NewNode((*xml.InternalNode)(i), nil))
 			}
 		}
-		return "", nil
+		return nodeSetNavigators(nodes), nil
 	default:
 		return fmt.Sprintf("%v", val), nil
 	}
@@ -517,6 +535,15 @@ func (context *ExecutionContext) normalizeXPathArg(arg interface{}) interface{} 
 				adapter := na.Node()
 				if inner, ok := adapter.(*xml.InternalNode); ok {
 					result = append(result, inner)
+					continue
+				}
+				// Attribute results arrive as throw-away *xpath.AttrNode
+				// copies. Materialise them as DOM attribute nodes carrying
+				// their owning element instead of dropping them: EXSLT set
+				// functions compare attributes by (owner, name) and iterate
+				// the result, both of which need that owner.
+				if attr, ok := adapter.(*xpath.AttrNode); ok {
+					result = append(result, internalAttrNode(attr, navigatorOwner(nav)))
 				}
 			}
 		}
@@ -527,6 +554,12 @@ func (context *ExecutionContext) normalizeXPathArg(arg interface{}) interface{} 
 		adapter := na.Node()
 		if inner, ok := adapter.(*xml.InternalNode); ok {
 			return inner
+		}
+		if attr, ok := adapter.(*xpath.AttrNode); ok {
+			if nav, isNav := arg.(antchfx.NodeNavigator); isNav {
+				return internalAttrNode(attr, navigatorOwner(nav))
+			}
+			return internalAttrNode(attr, nil)
 		}
 		return adapter
 	}
