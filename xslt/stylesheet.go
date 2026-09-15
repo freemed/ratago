@@ -444,6 +444,27 @@ func (style *Stylesheet) Process(doc *xml.XmlDocument, options StylesheetOptions
 		return
 	}
 	style.populateKeys(start, context)
+
+	// Apply the parameter values supplied by the caller BEFORE evaluating the
+	// global variables: a global variable or param whose select expression
+	// references a stylesheet parameter (e.g. the REMITT stylesheets'
+	// <xsl:variable name="interchangeControlNumber"
+	//   select="format-number($jobId, '000000000')" />) must see the value the
+	// caller passed, not the empty value of the xsl:param declaration.
+	// libxslt binds parameters before any global variable is evaluated, so
+	// doing it afterwards made those variables resolve to an empty node-set.
+	for _, param := range style.GlobalParameters {
+		// was a parameter passed with this name?
+		gp_value, gp_ok := options.Parameters[param]
+		if gp_ok {
+			gp_var := style.Variables[param]
+			if gp_var != nil {
+				// replace value of style.Variables[key]
+				gp_var.Value = gp_value
+			}
+		}
+	}
+
 	// eval global params and variables in dependency order.
 	// antchfx/xpath does not support $variable references, so variables
 	// with select expressions referencing other variables must be
@@ -462,18 +483,6 @@ func (style *Stylesheet) Process(doc *xml.XmlDocument, options StylesheetOptions
 		}
 		if !anyEvaluated {
 			break
-		}
-	}
-
-	// for each global parameter
-	for _, param := range style.GlobalParameters {
-		// was a parameter passed with this name?
-		gp_value, gp_ok := options.Parameters[param]
-		if gp_ok {
-			gp_var := style.Variables[param]
-			// replace value of style.Variables[key]
-			gp_var.Value = gp_value
-			// fmt.Println("Existing", param, "set to", gp_value)
 		}
 	}
 

@@ -8,6 +8,7 @@ import (
 	"github.com/freemed/gokogiri/xpath"
 	antchfx "github.com/freemed/xpath"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unsafe"
 )
@@ -29,6 +30,7 @@ type ExecutionContext struct {
 func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (result interface{}, err error) {
 	switch data := data.(type) {
 	case string:
+		data = context.contextualizeXPath(data)
 		// Try standard compilation first. If the expression contains
 		// $variable references or potential extension functions (namespaced
 		// calls like set:distinct), try compilation with resolvers.
@@ -40,6 +42,15 @@ func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (
 		if xpathExpr == nil {
 			xpathExpr = xpath.Compile(data)
 		}
+		// Plain compilation also fails for calls to XSLT-only functions that
+		// the XPath engine does not implement as built-ins (current(),
+		// format-number(), generate-id(), key(), ...), so a failing plain
+		// compile is not the end of the road: retry with the XSLT
+		// variable/function resolvers attached before giving up.
+		if xpathExpr == nil {
+			vr, fr := context.xpathResolvers()
+			xpathExpr = xpath.CompileWithResolvers(data, nil, vr, fr)
+		}
 		if xpathExpr != nil {
 			defer xpathExpr.Free()
 			result, err = context.EvalXPath(xmlNode, xpathExpr)
@@ -49,6 +60,14 @@ func (context *ExecutionContext) EvalXPath(xmlNode xml.Node, data interface{}) (
 	case []byte:
 		result, err = context.EvalXPath(xmlNode, string(data))
 	case *xpath.Expression:
+		// An expression containing position()/last() at its top level must be
+		// evaluated with the XSLT context position, which the XPath engine
+		// cannot know (see contextualizeXPath). Recompile the rewritten text.
+		if src := data.String(); src != "" {
+			if rewritten := context.contextualizeXPath(src); rewritten != src {
+				return context.EvalXPath(xmlNode, rewritten)
+			}
+		}
 		xpathCtx := context.XPathContext
 		xpathCtx.SetResolver(context)
 		err := xpathCtx.Evaluate(xmlNode.NodePtr(), data)
@@ -545,6 +564,15 @@ func (context *ExecutionContext) normalizeXPathArg(arg interface{}) interface{} 
 				if attr, ok := adapter.(*xpath.AttrNode); ok {
 					result = append(result, internalAttrNode(attr, navigatorOwner(nav)))
 				}
+				continue
+			}
+			// Synthetic navigators (the engine's scalarNavigator) are not DOM
+			// nodes at all: they wrap a scalar value, e.g. a variable holding
+			// a string. Hand the function that value the way string() would,
+			// instead of dropping it -- dropping it made format-number($jobId,
+			// '000000000') receive an empty node-set and print NaN.
+			if nav != nil {
+				result = append(result, nav.Value())
 			}
 		}
 		return result
@@ -562,6 +590,10 @@ func (context *ExecutionContext) normalizeXPathArg(arg interface{}) interface{} 
 			return internalAttrNode(attr, nil)
 		}
 		return adapter
+	}
+	if nav, ok := arg.(antchfx.NodeNavigator); ok && nav != nil {
+		// Scalar in navigator clothing: use its string value.
+		return nav.Value()
 	}
 	return arg
 }
@@ -583,6 +615,132 @@ func (r *xpathFuncResolver) ResolveFunction(prefix, name string, args []interfac
 // xpathResolvers returns VariableResolver and FunctionResolver adapters.
 func (context *ExecutionContext) xpathResolvers() (antchfx.VariableResolver, antchfx.FunctionResolver) {
 	return &xpathVarResolver{ctx: context}, &xpathFuncResolver{ctx: context}
+}
+
+// contextualizeXPath substitutes the XSLT context position and size into an
+// XPath expression before it is handed to the XPath engine.
+//
+// XPath 1.0 defines position() as "the context position from the expression
+// evaluation context" and XSLT defines that context position for an expression
+// in an instruction as the position of the current node in the node list the
+// current template/instruction is processing (xsl:for-each and
+// xsl:apply-templates establish that list; xsl:call-template inherits it).
+// The bundled XPath engine has no such context: its position() walks the
+// previous nodes of the DOM tree and returns 1 + the number of them, which is
+// only accidentally right when the node list is a run of adjacent siblings,
+// and its last() applies the same idea forwards. For the REMITT stylesheets
+// (statement.xsl renders its procedure rows with `$line + $offset` where
+// $line is a position() from the enclosing for-each) that produced row 42
+// where libxslt produces row 19.
+//
+// ratago therefore supplies the value itself, from the position/size it
+// already tracks for the current node list (SetContextPosition in
+// xsl:for-each, xsl:apply-templates and the match-pattern evaluator).
+// Only top-level occurrences are substituted: inside a predicate the engine
+// builds its own node list and its own position() is correct.
+func (context *ExecutionContext) contextualizeXPath(expr string) string {
+	if context.XPathContext == nil {
+		return expr
+	}
+	pos, size := context.XPathContext.GetContextPosition()
+	if pos < 1 {
+		pos = 1
+	}
+	if size < 1 {
+		size = 1
+	}
+	return rewriteContextPosition(expr, pos, size)
+}
+
+// rewriteContextPosition replaces top-level position()/last() calls in an
+// XPath expression by the supplied literals. Calls inside a predicate
+// (square brackets) or inside a string literal are left untouched. The
+// expression is returned unchanged when there is nothing to replace.
+func rewriteContextPosition(expr string, pos, size int) string {
+	if !strings.Contains(expr, "position") && !strings.Contains(expr, "last") {
+		return expr
+	}
+	var out strings.Builder
+	depth := 0
+	for i := 0; i < len(expr); {
+		c := expr[i]
+		switch c {
+		case '\'', '"':
+			// Copy the string literal verbatim: a function name inside a
+			// literal is data, not a call.
+			j := i + 1
+			for j < len(expr) && expr[j] != c {
+				j++
+			}
+			if j < len(expr) {
+				j++
+			}
+			out.WriteString(expr[i:j])
+			i = j
+			continue
+		case '[':
+			depth++
+		case ']':
+			if depth > 0 {
+				depth--
+			}
+		}
+		if depth == 0 && isFunctionNameStart(expr, i) {
+			if n, ok := matchZeroArgCall(expr[i:], "position"); ok {
+				out.WriteString(strconv.Itoa(pos))
+				i += n
+				continue
+			}
+			if n, ok := matchZeroArgCall(expr[i:], "last"); ok {
+				out.WriteString(strconv.Itoa(size))
+				i += n
+				continue
+			}
+		}
+		out.WriteByte(c)
+		i++
+	}
+	return out.String()
+}
+
+// isFunctionNameStart reports whether a function name may start at offset i,
+// i.e. the preceding character cannot be part of a QName or a number
+// ("my-position(" and "x:position(" are different functions).
+func isFunctionNameStart(expr string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	switch c := expr[i-1]; {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return false
+	case c == '_' || c == '-' || c == '.' || c == ':':
+		return false
+	}
+	return true
+}
+
+// matchZeroArgCall reports whether s starts with name followed by an empty
+// argument list, optionally with whitespace around the parentheses, and
+// returns the number of bytes that call spans.
+func matchZeroArgCall(s, name string) (int, bool) {
+	if !strings.HasPrefix(s, name) {
+		return 0, false
+	}
+	i := len(name)
+	for i < len(s) && (s[i] == ' ' || s[i] == '	' || s[i] == '\n' || s[i] == '\r') {
+		i++
+	}
+	if i >= len(s) || s[i] != '(' {
+		return 0, false
+	}
+	i++
+	for i < len(s) && (s[i] == ' ' || s[i] == '	' || s[i] == '\n' || s[i] == '\r') {
+		i++
+	}
+	if i >= len(s) || s[i] != ')' {
+		return 0, false
+	}
+	return i + 1, true
 }
 
 func (context *ExecutionContext) DeclareLocalVariable(name, ns string, v *Variable) error {

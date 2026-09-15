@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
-	"regexp"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -1322,18 +1321,15 @@ func XsltFormatNumber(context xpath.VariableScope, args []interface{}) interface
 		return nil
 	}
 
-	var number float64
-	switch v := args[0].(type) {
-	case float64:
-		number = v
-	case int:
-		number = float64(v)
-	case string:
-		number, _ = strconv.ParseFloat(v, 64)
-	default:
-		number, _ = strconv.ParseFloat(fmt.Sprintf("%v", v), 64)
-	}
-	format := args[1].(string)
+	// The first argument is converted to a number the way the XPath number()
+	// function would convert it (XPath 1.0 4.4): a node-set contributes the
+	// string-value of its first node in document order and an empty node-set
+	// (or a string that is not a valid XPath number) is NaN. Formatting an
+	// empty node-set therefore yields the decimal-format NaN string, exactly
+	// as libxslt does; treating it as 0 produced "0.00" where xsltproc
+	// produces "NaN" (cms1500 box 24f, statement charges/paid/balance).
+	number := xpathArgToNumber(args[0])
+	format := argValToString(args[1])
 
 	if len(format) <= 0 {
 		fmt.Println("XsltFormatNumber: Invalid format (0-length)")
@@ -1394,98 +1390,284 @@ func XsltFormatNumber(context xpath.VariableScope, args []interface{}) interface
 		number = -number
 	}
 
-	re := regexp.MustCompile("(?P<int>(?:#|0)*)(?P<dot>.)(?P<dec>(?:#|0)*)")
-	names := re.SubexpNames()
-	matches := re.FindAllStringSubmatch(format, -1)
-	if matches == nil || len(matches) == 0 {
-		// No decimal part in format; format as integer
-		intPart := reInteger.FindAllStringSubmatch(format, -1)
-		if intPart != nil {
-			parts := map[string]string{}
-			for i, n := range reInteger.SubexpNames() {
-				parts[n] = intPart[0][i]
-			}
-			return formatIntegerPart(number, parts, groupSep, negative, df)
-		}
-		return fmt.Sprintf("%v", number)
+	// Split the pattern into its integer and fractional parts the way the JDK
+	// DecimalFormat grammar (and libxslt) does: the decimal separator only
+	// separates the two when the pattern actually contains the decimal
+	// separator character. The previous regex-based splitter treated the
+	// character after the leading run of '#'/'0' as a decimal separator
+	// whatever it was, so the all-zero pattern '000000000' was read as
+	// "00000000" + "." + "" and format-number(1, '000000000') printed
+	// "00000000." instead of "000000001".
+	prefix, intPart, fracPart, suffix, hasDecimal := splitNumberPattern(format, decSep)
+
+	// Grouping is requested by the pattern itself, not by xsl:decimal-format:
+	// a grouping separator character in the pattern ("#,##0.00") means "insert
+	// the grouping separator every three digits", and the character used is the
+	// decimal-format's grouping separator (',' by default).
+	if strings.ContainsAny(intPart+fracPart, ",") && groupSep == "" {
+		groupSep = ","
 	}
 
-	parts := map[string]string{}
-	for i, n := range matches[0] {
-		parts[names[i]] = n
+	integerDigits := strings.Count(intPart, "0")
+	integerHash := strings.Count(intPart, "#")
+	fracDigits := strings.Count(fracPart, "0")
+	fracHash := strings.Count(fracPart, "#")
+
+	// "Special case: java treats '.#' like '.0', '.##' like '.0#', etc."
+	if integerDigits+integerHash+fracDigits == 0 && fracHash > 0 {
+		fracDigits++
+		fracHash--
 	}
+
+	// Round to the number of fractional digits the pattern asks for before
+	// splitting the number, exactly as libxslt does: this is what makes the
+	// value carry into the integer part (format-number(0.5, '#') is "1", not
+	// "0"), and it is why the rounding has to happen up front.
+	exp10 := fracDigits + fracHash
+	scale := math.Pow(10, float64(exp10))
+	number += .5 / scale
+	number -= math.Mod(number, 1/scale)
+	if number < 0 {
+		number = -number
+	}
+
+	intValue := math.Floor(number)
+	fracValue := number - intValue
 
 	var buffer bytes.Buffer
 
-	// Format integer part
-	intStr := formatIntegerPart(number, parts, groupSep, false, df)
-	buffer.WriteString(intStr)
-
-	// Format decimal part
-	if parts["dot"] != "" {
-		buffer.WriteString(decSep)
-		frac := number - float64(int64(number))
-		if frac < 0 {
-			frac = -frac
-		}
-		decFmt := parts["dec"]
-		if decFmt != "" {
-			decStr := strconv.FormatFloat(frac, 'f', len(decFmt), 64)
-			// Strip leading "0."
-			if len(decStr) > 2 && decStr[0] == '0' && decStr[1] == '.' {
-				decStr = decStr[2:]
-			}
-			buffer.WriteString(decStr)
-		}
-	}
-
-	result := buffer.String()
-
-	// Prepend minus sign for negative numbers
+	// The sign goes in front of everything the pattern produces.
 	if negative {
 		minusSign := "-"
 		if df != nil && df.MinusSign != "" {
 			minusSign = df.MinusSign
 		}
-		result = minusSign + result
+		buffer.WriteString(minusSign)
 	}
 
-	return result
+	buffer.WriteString(prefix)
+	buffer.WriteString(formatIntegerPart(intValue, integerDigits, groupSep))
+	// libxslt's xsltNumberFormatDecimal() writes no digit at all for a value
+	// below 1 when the pattern has no mandatory digit, and the caller then adds
+	// a single '0' if the pattern neither has a mandatory integer digit nor a
+	// mandatory fractional one.
+	if intValue == 0 && integerDigits+fracDigits == 0 {
+		buffer.WriteString("0")
+	}
+
+	// Fractional part
+	if fracDigits+fracHash == 0 {
+		if hasDecimal {
+			buffer.WriteString(decSep)
+		}
+	} else if fracValue != 0 || fracDigits != 0 {
+		buffer.WriteString(decSep)
+		// Print fracDigits mandatory digits plus as many optional ones as the
+		// value actually has (Java drops trailing '#' zeros).
+		digits := strconv.FormatFloat(fracValue, 'f', exp10, 64)
+		if i := strings.IndexByte(digits, '.'); i >= 0 {
+			digits = digits[i+1:]
+		}
+		for n := len(digits); n > fracDigits && strings.HasSuffix(digits, "0"); n-- {
+			digits = digits[:n-1]
+		}
+		for len(digits) < fracDigits {
+			digits = "0" + digits
+		}
+		buffer.WriteString(digits)
+	}
+
+	buffer.WriteString(suffix)
+
+	return buffer.String()
 }
 
-var reInteger = regexp.MustCompile("(?P<int>(?:#|0)*)")
+// splitNumberPattern splits a format-number pattern into its prefix, integer
+// part, fractional part and suffix, returning also whether the pattern has a
+// decimal separator at all.
+//
+// This mirrors the way xsltFormatNumberConversion() in libxslt (and the JDK 1.1
+// DecimalFormat grammar it implements) reads a sub-pattern: the prefix is
+// everything before the first digit/#/decimal-separator/grouping-separator/
+// percent character, the integer part is the run of '#', '0' and grouping
+// characters, and only a literal decimal separator character ('.' unless
+// xsl:decimal-format says otherwise) starts the fractional part. Everything
+// after the last digit character is the suffix, i.e. literal text to copy.
+//
+// Note that a character like '1' is NOT special in this grammar: libxslt reads
+// the pattern "1" as the prefix "1" and an empty number part, which is why
+// format-number(5, '1') is "15". A prefix/suffix is copied verbatim; quoting
+// (') and the percent/per-mille multipliers are not implemented.
+func splitNumberPattern(format, decSep string) (prefix, intPart, fracPart, suffix string, hasDecimal bool) {
+	isDigitChar := func(c byte) bool { return c == '#' || c == '0' || c == ',' }
+	isDecimalSep := func(c byte) bool { return decSep != "" && c == decSep[0] }
 
-func formatIntegerPart(number float64, parts map[string]string, groupSep string, negative bool, df *DecimalFormat) string {
+	i := 0
+	// Skip the prefix: any character before the first digit/#/separator/'%'.
+	for i < len(format) && !isDigitChar(format[i]) && !isDecimalSep(format[i]) &&
+		format[i] != '%' && format[i] != 0xE2 {
+		i++
+	}
+	prefix = format[:i]
+	start := i
+	for i < len(format) && isDigitChar(format[i]) {
+		i++
+	}
+	intPart = format[start:i]
+	if i < len(format) && isDecimalSep(format[i]) {
+		hasDecimal = true
+		i++
+		start = i
+		for i < len(format) && isDigitChar(format[i]) {
+			i++
+		}
+		fracPart = format[start:i]
+	}
+	suffix = format[i:]
+	return
+}
+
+// formatIntegerPart renders the integer part of an already rounded number
+// according to the integer part of a decimal-format pattern.
+//
+// '0' in the pattern is a mandatory digit and '#' an optional one, so the
+// digits are left-padded with zeros up to the count of '0' characters (which is
+// what makes format-number(1, '000000000') "000000001"), and a pattern made
+// only of '#' renders nothing at all for a number below 1 (which is what makes
+// format-number(0, '#.00') ".00" and lets the caller decide about the single
+// '0' libxslt adds when the pattern has no mandatory digit anywhere).
+func formatIntegerPart(intValue float64, minDigits int, groupSep string) string {
 	var buffer bytes.Buffer
-	intPart := parts["int"]
 
-	intstr := strconv.FormatInt(int64(number), 10)
+	digits := ""
+	if intValue != 0 || minDigits > 0 {
+		digits = strconv.FormatInt(int64(intValue), 10)
+	}
+	if len(digits) < minDigits {
+		digits = strings.Repeat("0", minDigits-len(digits)) + digits
+	}
 
-	if intPart != "" {
-		// If format is all zeros, pad with leading zeros
-		if !strings.ContainsRune(intPart, '#') {
-			if len(intstr) < len(intPart) {
-				for i := 0; i < len(intPart)-len(intstr); i++ {
-					buffer.WriteByte('0')
-				}
+	// Apply grouping separator if specified
+	if groupSep != "" {
+		for i, ch := range digits {
+			if i > 0 && (len(digits)-i)%3 == 0 {
+				buffer.WriteString(groupSep)
 			}
-			buffer.WriteString(intstr)
-		} else {
-			buffer.WriteString(intstr)
+			buffer.WriteRune(ch)
 		}
-
-		// Apply grouping separator if specified
-		if groupSep != "" {
-			result := buffer.String()
-			buffer.Reset()
-			for i, ch := range result {
-				if i > 0 && (len(result)-i)%3 == 0 {
-					buffer.WriteString(groupSep)
-				}
-				buffer.WriteRune(ch)
-			}
-		}
+	} else {
+		buffer.WriteString(digits)
 	}
 
 	return buffer.String()
+}
+
+// xpathArgToNumber converts an XPath function argument to a number using the
+// XPath 1.0 conversion rules for number() (spec 3.4/4.4).
+//
+// The important cases here are the ones the engine does not do for us: a
+// node-set argument (handed to us as a slice of gokogiri nodes) takes the
+// string-value of its first node in document order and an EMPTY node-set is
+// NaN -- not 0 -- and a string that is not a valid XPath number is NaN as
+// well.
+func xpathArgToNumber(arg interface{}) float64 {
+	switch v := arg.(type) {
+	case nil:
+		return math.NaN()
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case bool:
+		if v {
+			return 1
+		}
+		return 0
+	case string:
+		return parseXPathNumber(v)
+	case []interface{}:
+		if len(v) == 0 {
+			return math.NaN()
+		}
+		return xpathArgToNumber(v[0])
+	case []xml.Node:
+		if len(v) == 0 {
+			return math.NaN()
+		}
+		return parseXPathNumber(nodeStringValue(v[0]))
+	case xml.Nodeset:
+		if len(v) == 0 {
+			return math.NaN()
+		}
+		return parseXPathNumber(nodeStringValue(v[0]))
+	case []unsafe.Pointer:
+		if len(v) == 0 {
+			return math.NaN()
+		}
+		return parseXPathNumber(nodeStringValue(xml.NewNode((*xml.InternalNode)(v[0]), nil)))
+	case []antchfx.NodeNavigator:
+		if len(v) == 0 {
+			return math.NaN()
+		}
+		return parseXPathNumber(v[0].Value())
+	case *xml.InternalNode:
+		return parseXPathNumber(nodeStringValue(xml.NewNode(v, nil)))
+	case antchfx.NodeNavigator:
+		return parseXPathNumber(v.Value())
+	default:
+		return parseXPathNumber(fmt.Sprintf("%v", v))
+	}
+}
+
+// nodeStringValue returns the XPath string-value of a node: for an element
+// that is the concatenation of its descendant text, which is what the XPath
+// engine's navigator reports.
+func nodeStringValue(node xml.Node) string {
+	if node == nil {
+		return ""
+	}
+	if adapter, ok := node.NodePtr().(xpath.NodeAdapter); ok {
+		return xpath.NewNavigator(adapter).Value()
+	}
+	return node.Content()
+}
+
+// parseXPathNumber implements the XPath 1.0 conversion of a string to a number
+// (spec 4.4): optional whitespace, an optional minus sign, then either digits
+// with an optional decimal part or a leading '.' with digits, then optional
+// whitespace. Any other string converts to NaN -- including the empty string,
+// where strconv's zero value on error would have hidden the difference.
+func parseXPathNumber(s string) float64 {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return math.NaN()
+	}
+	i := 0
+	if t[i] == '-' {
+		i++
+	}
+	digits := 0
+	for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+		i++
+		digits++
+	}
+	if i < len(t) && t[i] == '.' {
+		i++
+		for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+			i++
+			digits++
+		}
+	}
+	if digits == 0 || i != len(t) {
+		return math.NaN()
+	}
+	f, err := strconv.ParseFloat(t, 64)
+	if err != nil {
+		return math.NaN()
+	}
+	return f
 }
